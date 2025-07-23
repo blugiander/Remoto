@@ -1,0 +1,4 @@
+SERVER_HOST = '0.0.0.0'
+SERVER_PORT = 8765
+PIN_LENGTH = 6
+LOG_FILE = 'server.log'

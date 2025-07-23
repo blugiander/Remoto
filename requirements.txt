@@ -1,0 +1,7 @@
+# Remoto/requirements.txt
+cryptography
+websockets
+asyncio
+pyautogui
+opencv-python
+mss
