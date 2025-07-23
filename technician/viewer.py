@@ -1,11 +1,8 @@
-import cv2
-import base64
-import numpy as np
+import cv2, base64, numpy as np
 
 def mostra_immagine(base64_data):
-    img_bytes = base64.b64decode(base64_data)
-    np_arr = np.frombuffer(img_bytes, np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    frame = cv2.imdecode(np.frombuffer(base64.b64decode(base64_data), np.uint8), cv2.IMREAD_COLOR)
     if frame is not None:
-        cv2.imshow("Schermo remoto", frame)
-        cv2.waitKey(1)
+        cv2.imshow("Schermo Remoto", frame)
+        if cv2.waitKey(1) == ord('q'):
+            cv2.destroyAllWindows()

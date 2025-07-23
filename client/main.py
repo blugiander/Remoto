@@ -1,6 +1,4 @@
-import asyncio
-import websockets
-import json
+import asyncio, json, websockets
 from config import SERVER_HOST, SERVER_PORT, CLIENT_ID
 from capture import cattura_schermo
 from control import esegui_comando
@@ -12,9 +10,7 @@ async def client_loop():
             'role': 'client',
             'id': CLIENT_ID
         }))
-
-        response = await ws.recv()
-        pin_data = json.loads(response)
+        pin_data = json.loads(await ws.recv())
         print(f"📌 PIN da comunicare al tecnico: {pin_data['pin']}")
 
         while True:
@@ -28,11 +24,9 @@ async def client_loop():
                     'data': screen
                 }
             }))
-
             try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=1)
-                data = json.loads(msg)
-                esegui_comando(data['content'])
+                esegui_comando(json.loads(msg)['content'])
             except asyncio.TimeoutError:
                 pass
 

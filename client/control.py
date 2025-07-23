@@ -1,10 +1,7 @@
 import pyautogui
 
 def esegui_comando(data):
-    tipo = data.get('tipo')
-    if tipo == 'click':
-        x, y = data['x'], data['y']
-        pyautogui.click(x, y)
-    elif tipo == 'keypress':
-        key = data['key']
-        pyautogui.press(key)
+    if data['tipo'] == 'click':
+        pyautogui.click(data['x'], data['y'])
+    elif data['tipo'] == 'keypress':
+        pyautogui.press(data['key'])
