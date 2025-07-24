@@ -1,4 +1,4 @@
-# technician/main.py
+# technician/main.py (modificato per inviare input)
 
 import asyncio
 import websockets
@@ -8,12 +8,63 @@ import numpy as np
 import cv2
 import sys
 from config import SERVER_HOST, SERVER_PORT, TECHNICIAN_ID
+from pynput import mouse, keyboard # Importa pynput
+
+# Variabile globale per la connessione WebSocket
+ws_global = None
+
+# Funzione per gestire gli eventi del mouse e inviarli al server
+def on_click(x, y, button, pressed):
+    if pressed:
+        # Invia solo eventi di click (quando il pulsante è premuto)
+        button_name = str(button).split('.')[-1] # es. 'left', 'right'
+        event_data = {
+            "type": "mouse_click",
+            "x": x,
+            "y": y,
+            "button": button_name
+        }
+        # Invia tramite la connessione WebSocket globale
+        if ws_global and not ws_global.closed:
+            # Per inviare da un thread sincrono a un loop asyncio, devi usare run_coroutine_threadsafe
+            asyncio.run_coroutine_threadsafe(
+                ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
+                asyncio.get_event_loop()
+            )
+            # print(f"DEBUG: Inviato click: {event_data}") # Rimuovi o commenta per pulizia
+
+# Funzione per gestire gli eventi della tastiera e inviarli al server
+def on_press(key):
+    try:
+        char = key.char # Caratteri normali
+    except AttributeError:
+        char = str(key) # Tasti speciali (es. Key.space, Key.enter)
+        # Semplificazione per i tasti speciali più comuni, puoi espanderla
+        if 'Key.' in char:
+            char = char.replace('Key.', '').lower()
+        
+    event_data = {
+        "type": "key_press",
+        "key": char
+    }
+    if ws_global and not ws_global.closed:
+        asyncio.run_coroutine_threadsafe(
+            ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
+            asyncio.get_event_loop()
+        )
+        # print(f"DEBUG: Inviato pressione tasto: {event_data}") # Rimuovi o commenta per pulizia
+
+# Funzione per gestire il rilascio dei tasti (se necessario, al momento non usata)
+# def on_release(key):
+#    pass
 
 async def technician_loop():
+    global ws_global # Dichiara ws_global come globale per poterla assegnare
     uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
     print(f"🔗 Connessione al server {uri}...")
     try:
         async with websockets.connect(uri) as ws:
+            ws_global = ws # Assegna la connessione WebSocket alla variabile globale
             print("✅ Connesso.")
 
             # Fase di registrazione
@@ -32,6 +83,19 @@ async def technician_loop():
             data = json.loads(response)
             if data.get('status') == 'connected':
                 print("✅ Connesso. Ricezione schermo...")
+                
+                # --- Avvia i listener di pynput in un executor ---
+                # Questo permette ai listener sincroni di girare senza bloccare asyncio
+                loop = asyncio.get_event_loop()
+                mouse_listener = mouse.Listener(on_click=on_click)
+                keyboard_listener = keyboard.Listener(on_press=on_press)
+                
+                # Avvia i listener in background
+                mouse_listener.start()
+                keyboard_listener.start()
+
+                print("DEBUG: Listener mouse e tastiera avviati.")
+
             elif data.get('status') == 'invalid_pin':
                 print("❌ PIN non valido. Riprova.")
                 return
@@ -42,11 +106,7 @@ async def technician_loop():
             # Loop di ricezione e visualizzazione dello schermo
             while True:
                 try:
-                    # Il messaggio ricevuto dal server è la stringa JSON del frame (o comando)
                     message_content_string = await ws.recv() 
-                    
-                    # Decodifica la stringa JSON (che è il frame codificato in base64)
-                    # Non fare data.get('content') perché message_content_string è già il contenuto!
                     encoded_frame = message_content_string 
                     
                     if encoded_frame:
@@ -56,11 +116,8 @@ async def technician_loop():
 
                         if frame is not None:
                             cv2.imshow("Schermo Remoto", frame)
-                            if cv2.waitKey(1) & 0xFF == ord('q'): # Premi 'q' per chiudere
+                            if cv2.waitKey(1) & 0xFF == ord('q'): 
                                 break
-                        # else:
-                        #     print("ERRORE: Frame decodificato è None, possibile problema di dati.")
-
                 except websockets.exceptions.ConnectionClosedOK:
                     print("Disconnesso dal server normalmente durante la ricezione frame.")
                     break
@@ -70,15 +127,22 @@ async def technician_loop():
                 except json.JSONDecodeError as e:
                     print(f"ERRORE: Errore di decodifica JSON dal server: {e}. Messaggio raw: {message_content_string[:200]}...")
                 except Exception as e:
-                    # Corretto: rimosso exc_info=True per print
                     print(f"ERRORE TECNICO durante elaborazione frame: {e}") 
             
-            cv2.destroyAllWindows() # Chiudi le finestre OpenCV quando il loop termina
+            cv2.destroyAllWindows() 
 
-    except websockets.exceptions.ConnectionRefused: # Corretto: rimosso websockets.exceptions.
+    except ConnectionRefusedError: 
         print(f"ERRORE: Connessione rifiutata dal server {uri}. Assicurati che il server sia in esecuzione e la porta sia aperta.")
     except Exception as e:
-        print(f"ERRORE TECNICO generale: {e}") # Corretto: rimosso exc_info=True per print
+        print(f"ERRORE TECNICO generale: {e}")
+    finally:
+        # Assicurati di fermare i listener di pynput alla fine
+        if 'mouse_listener' in locals() and mouse_listener.running:
+            mouse_listener.stop()
+            print("DEBUG: Mouse listener stopped.")
+        if 'keyboard_listener' in locals() and keyboard_listener.running:
+            keyboard_listener.stop()
+            print("DEBUG: Keyboard listener stopped.")
 
 if __name__ == "__main__":
     asyncio.run(technician_loop())
