@@ -1,0 +1,19 @@
+# Ignora le cartelle di bytecode Python
+__pycache__/
+
+# Ignora gli ambienti virtuali
+venv/
+venv_client/
+venv_technician/
+
+# Ignora i file e le cartelle generate da PyInstaller
+*.spec
+build/
+dist/
+
+# Ignora i file temporanei comuni
+*.pyc
+.DS_Store # Per utenti macOS
+*~        # File di backup di alcuni editor
+*.log
+.pytest_cache/ # Cache di pytest se lo usi
