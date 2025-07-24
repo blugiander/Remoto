@@ -9,6 +9,7 @@ import cv2
 import sys
 from config import SERVER_HOST, SERVER_PORT, TECHNICIAN_ID
 from pynput import mouse, keyboard
+import websockets.protocol # <-- AGGIUNGI QUESTA LINEA
 
 # Variabile globale per la connessione WebSocket
 ws_global = None
@@ -23,7 +24,8 @@ def on_click(x, y, button, pressed):
             "y": y,
             "button": button_name
         }
-        if ws_global and ws_global.open: # <--- MODIFICA QUI: DA .closed A .open
+        # MODIFICA QUI: Controlla lo stato della connessione usando ws.state
+        if ws_global and ws_global.state == websockets.protocol.State.OPEN: 
             try:
                 # Per inviare da un thread sincrono a un loop asyncio, devi usare run_coroutine_threadsafe
                 asyncio.run_coroutine_threadsafe(
@@ -32,7 +34,6 @@ def on_click(x, y, button, pressed):
                 )
             except Exception as e:
                 print(f"ERRORE nel callback mouse: {e}")
-                # Potresti voler fermare i listener qui se la connessione è persa
         # else:
             # print("DEBUG: Connessione ws_global non aperta, click non inviato.")
 
@@ -51,7 +52,8 @@ def on_press(key):
         "type": "key_press",
         "key": char
     }
-    if ws_global and ws_global.open: # <--- MODIFICA QUI: DA .closed A .open
+    # MODIFICA QUI: Controlla lo stato della connessione usando ws.state
+    if ws_global and ws_global.state == websockets.protocol.State.OPEN: 
         try:
             asyncio.run_coroutine_threadsafe(
                 ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
@@ -59,13 +61,10 @@ def on_press(key):
             )
         except Exception as e:
             print(f"ERRORE nel callback tastiera: {e}")
-            # Potresti voler fermare i listener qui se la connessione è persa
     # else:
         # print("DEBUG: Connessione ws_global non aperta, tasto non inviato.")
 
-# Funzione per gestire il rilascio dei tasti (se necessario, al momento non usata)
-# def on_release(key):
-#    pass
+# ... (il resto del codice rimane invariato) ...
 
 async def technician_loop():
     global ws_global # Dichiara ws_global come globale per poterla assegnare
@@ -157,7 +156,7 @@ async def technician_loop():
             keyboard_listener.stop()
             print("DEBUG: Keyboard listener stopped.")
         # Assicurati di chiudere la connessione WebSocket se è ancora aperta
-        if ws_global and not ws_global.closed:
+        if ws_global and ws_global.state != websockets.protocol.State.CLOSED: # MODIFICA ANCHE QUI
             await ws_global.close()
             print("DEBUG: WebSocket connection closed.")
 
