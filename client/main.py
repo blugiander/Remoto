@@ -10,17 +10,29 @@ from config import SERVER_HOST, SERVER_PORT, CLIENT_ID
 import tkinter as tk
 from tkinter import messagebox
 from pynput import mouse, keyboard 
+import threading # <-- AGGIUNGI QUESTA LINEA
 
 # Inizializza controller di pynput
 mouse_controller = mouse.Controller()
 keyboard_controller = keyboard.Controller()
 
-# Funzione per mostrare il PIN in una finestra pop-up
-def show_pin_dialog(pin_code):
+# Modifica la funzione show_pin_dialog per essere eseguita in un thread
+def _run_pin_dialog_in_thread(pin_code):
     root = tk.Tk()
     root.withdraw() 
+    # Assicurati che il pop-up sia sempre in primo piano
+    root.attributes("-topmost", True) 
     messagebox.showinfo("PIN per il Tecnico", f"Il PIN per la connessione è: {pin_code}\nComunicalo al tecnico.")
     root.destroy()
+
+# Questa è la funzione che verrà chiamata dal thread principale
+def show_pin_dialog(pin_code):
+    # Crea un nuovo thread per eseguire la finestra Tkinter
+    pin_thread = threading.Thread(target=_run_pin_dialog_in_thread, args=(pin_code,))
+    pin_thread.start()
+    # Non fare pin_thread.join() qui, altrimenti bloccheresti il thread principale
+    # e sconfiggeresti lo scopo di usare un thread separato.
+    # Il thread si chiuderà da solo quando la finestra verrà chiusa.
 
 # Funzione per processare i comandi di input ricevuti dal server
 def process_command(command_data):
@@ -93,7 +105,7 @@ async def client_loop():
             data = json.loads(response)
             pin = data.get('pin')
             if pin:
-                show_pin_dialog(pin) 
+                show_pin_dialog(pin) # CHIAMATA ALLA FUNZIONE MODIFICATA
             else:
                 print("ERRORE: Non ho ricevuto un PIN dal server.")
                 return 
