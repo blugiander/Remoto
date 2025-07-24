@@ -9,6 +9,10 @@ relay = Relay()
 auth = AuthManager()
 
 async def handler(ws):
+    # Ottieni l'indirizzo remoto del client per il logging
+    client_address = ws.remote_address
+    print(f"Server DEBUG: Nuova connessione da {client_address}")
+
     try:
         async for msg in ws:
             data = json.loads(msg)
@@ -16,83 +20,60 @@ async def handler(ws):
             id = data.get('id')
             pin = data.get('pin')
             msg_type = data.get('type')
-            content = data.get('content')
+            content = data.get('content') # Contenuto del messaggio (es. schermo o comando)
+
+            print(f"Server DEBUG: Ricevuto messaggio. Tipo: {msg_type}, Ruolo: {role}, ID: {id}, da {client_address}")
 
             if msg_type == 'register':
                 await relay.register(ws, role, id)
+                print(f"Server DEBUG: Tentativo di registrazione di {role} con ID {id}.")
                 if role == 'client':
                     generated_pin = auth.create_session(id)
                     await ws.send(json.dumps({'pin': generated_pin}))
+                    print(f"Server DEBUG: Client {id} registrato. PIN generato: {generated_pin}. Inviato al client.")
                 else: # role == 'technician'
                     valid = auth.verify_pin(pin)
                     if valid:
-                        # Associa il tecnico al client registrato con quel PIN
-                        # Questo è un punto di miglioramento: il server dovrebbe sapere
-                        # quale client corrisponde a quale PIN per instradare i messaggi correttamente.
-                        # Per ora, assumiamo una relazione 1:1 o che 'target_id' sia sempre 'cliente-001'
-                        # lato tecnico per i comandi, e che il server inoltri lo schermo
-                        # dal client connesso al tecnico che ha usato il PIN di quel client.
+                        # Associa il tecnico al client registrato con quel PIN (miglioramento futuro)
                         await ws.send(json.dumps({'status': 'connected'}))
+                        print(f"Server DEBUG: Tecnico {id} connesso con PIN {pin} valido.")
                     else:
                         await ws.send(json.dumps({'status': 'invalid_pin'}))
+                        print(f"Server DEBUG: Tecnico {id} fallito connessione: PIN {pin} non valido.")
 
             elif msg_type == 'message':
-                # Il client invia lo schermo con 'content': {'tipo': 'screen', 'data': '...'}.
-                # Il tecnico invia comandi con 'content': {'tipo': 'click/keypress', 'x/key': ...}.
+                # Questo blocco viene attivato sia dal client (per lo schermo) che dal tecnico (per i comandi).
+                # La logica di inoltro è ora gestita principalmente dal modulo Relay,
+                # che decide il destinatario in base al ruolo del mittente.
                 
-                # 'data' è il messaggio JSON completo ricevuto dal mittente (client o tecnico).
-                # 'content' è il payload effettivo (es. dati dello schermo o comando).
+                print(f"Server DEBUG: Ricevuto messaggio di tipo 'message' da {role} (ID: {id}).")
                 
-                # Dobbiamo inoltrare 'content' come stringa JSON al destinatario appropriato.
-                
-                # Se il mittente è un client, il messaggio contiene l'ID del client stesso.
-                # Per inoltrare lo schermo al tecnico, dobbiamo sapere a quale tecnico inviarlo.
-                # Attualmente, non c'è una mappatura esplicita client-tecnico nel Relay.
-                # Un'opzione temporanea è inviare al TECHNICIAN_ID definito (es. 'tecnico-001'),
-                # o implementare una logica di accoppiamento nel Relay basata sul PIN.
-
-                # Per questo esempio, assumo che il target_id sia contenuto nel messaggio originale
-                # se proveniente dal tecnico (per i comandi), o che il server gestisca il routing
-                # dello schermo dal client al tecnico associato al PIN.
-                
-                # Importante: `content` è già un dizionario Python. Dobbiamo serializzarlo di nuovo.
                 if content:
-                    # Inoltra al target_id specificato dal mittente (es. tecnico per i comandi)
-                    # oppure, se è un messaggio da un client (schermo), il server deve capire a chi inviarlo.
-                    # Per il tuo setup, un client ('cliente-001') ha un solo tecnico ('tecnico-001').
+                    # 'data.get('target_id')' sarà None se il messaggio proviene da un client (schermo),
+                    # altrimenti sarà l'ID del client se proviene da un tecnico (comando).
+                    # Relay.forward ora usa il ruolo del mittente per decidere l'inoltro.
+                    target_id_from_sender = data.get('target_id')
                     
-                    # Se il messaggio proviene dal CLIENT (ruolo 'client'),
-                    # allora 'id' è il CLIENT_ID (es. 'cliente-001').
-                    # Dobbiamo trovare il tecnico associato a quel client.
-                    # Poiché non c'è una mappatura esplicita nel Relay per questo,
-                    # e il tecnico ha un 'target_id' fisso per 'cliente-001',
-                    # possiamo assumere che il messaggio dello schermo dal client vada al tecnico principale.
+                    # Stampa solo l'inizio del contenuto per non floodare la console
+                    content_preview = str(content)[:200] + ('...' if len(str(content)) > 200 else '')
+                    print(f"Server DEBUG: Chiamata relay.forward. Mittente: {id}, Target originale dal mittente: {target_id_from_sender}. Contenuto (parziale): {content_preview}")
                     
-                    # Potresti anche passargli il 'target_id' dal messaggio se presente (es. nei comandi del tecnico).
-                    # Se 'data' ha un 'target_id', usalo. Altrimenti, se è un messaggio di schermo da un client,
-                    # il Relay dovrà avere logica per inoltrare al tecnico accoppiato al client_id.
+                    await relay.forward(ws, target_id_from_sender, json.dumps(content))
+                else:
+                    print(f"Server DEBUG: Messaggio di tipo 'message' da {id} con contenuto vuoto o non valido.")
+            else:
+                print(f"Server DEBUG: Tipo messaggio sconosciuto: {msg_type} da {id}.")
 
-                    # Per una soluzione più robusta:
-                    # Il server deve mantenere la mappatura PIN -> client_id -> technician_ws
-                    # Quindi, quando un client invia lo schermo (sapendo il suo client_id),
-                    # il server può cercare il technician_ws associato al client_id.
-
-                    # Per la logica attuale del tuo relay, potresti dover passare l'id del mittente
-                    # e lasciare che il relay decida chi è il destinatario in base al ruolo.
-
-                    # Modifica chiave: Inoltra l'intero messaggio 'data' se vuoi che il tecnico
-                    # riceva la struttura completa, oppure continua a inoltrare 'content'
-                    # ma assicurandoti che sia serializzato. Il tuo 'technician/main.py' si aspetta 'content'.
-                    # Quindi, la modifica più diretta e corretta è:
-                    await relay.forward(ws, data.get('target_id'), json.dumps(content))
-                    
     except websockets.exceptions.ConnectionClosedOK:
-        print(f"Connessione chiusa normalmente da {ws.remote_address}")
+        print(f"Server DEBUG: Connessione chiusa normalmente da {client_address} (ID: {relay.ws_to_id.get(ws, 'sconosciuto')}).")
+    except json.JSONDecodeError as e:
+        print(f"Server ERRORE: Errore di decodifica JSON dal client {client_address}: {e}. Messaggio raw: {msg[:200]}...")
     except Exception as e:
-        print(f'Errore generico in handler: {e}')
+        print(f'Server ERRORE: Errore generico in handler per {client_address}: {e}', exc_info=True) # exc_info=True per stack trace
     finally:
         # Gestione della disconnessione
         relay.unregister(ws)
+        print(f"Server DEBUG: Client {relay.ws_to_id.get(ws, 'sconosciuto')} disconnesso dal relay.")
 
 
 async def main():
