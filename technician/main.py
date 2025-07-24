@@ -1,4 +1,4 @@
-# technician/main.py (modificato per inviare input)
+# technician/main.py
 
 import asyncio
 import websockets
@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 import sys
 from config import SERVER_HOST, SERVER_PORT, TECHNICIAN_ID
-from pynput import mouse, keyboard # Importa pynput
+from pynput import mouse, keyboard
 
 # Variabile globale per la connessione WebSocket
 ws_global = None
@@ -16,22 +16,26 @@ ws_global = None
 # Funzione per gestire gli eventi del mouse e inviarli al server
 def on_click(x, y, button, pressed):
     if pressed:
-        # Invia solo eventi di click (quando il pulsante è premuto)
-        button_name = str(button).split('.')[-1] # es. 'left', 'right'
+        button_name = str(button).split('.')[-1]
         event_data = {
             "type": "mouse_click",
             "x": x,
             "y": y,
             "button": button_name
         }
-        # Invia tramite la connessione WebSocket globale
-        if ws_global and not ws_global.closed:
-            # Per inviare da un thread sincrono a un loop asyncio, devi usare run_coroutine_threadsafe
-            asyncio.run_coroutine_threadsafe(
-                ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
-                asyncio.get_event_loop()
-            )
-            # print(f"DEBUG: Inviato click: {event_data}") # Rimuovi o commenta per pulizia
+        if ws_global and ws_global.open: # <--- MODIFICA QUI: DA .closed A .open
+            try:
+                # Per inviare da un thread sincrono a un loop asyncio, devi usare run_coroutine_threadsafe
+                asyncio.run_coroutine_threadsafe(
+                    ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
+                    asyncio.get_event_loop()
+                )
+            except Exception as e:
+                print(f"ERRORE nel callback mouse: {e}")
+                # Potresti voler fermare i listener qui se la connessione è persa
+        # else:
+            # print("DEBUG: Connessione ws_global non aperta, click non inviato.")
+
 
 # Funzione per gestire gli eventi della tastiera e inviarli al server
 def on_press(key):
@@ -47,12 +51,17 @@ def on_press(key):
         "type": "key_press",
         "key": char
     }
-    if ws_global and not ws_global.closed:
-        asyncio.run_coroutine_threadsafe(
-            ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
-            asyncio.get_event_loop()
-        )
-        # print(f"DEBUG: Inviato pressione tasto: {event_data}") # Rimuovi o commenta per pulizia
+    if ws_global and ws_global.open: # <--- MODIFICA QUI: DA .closed A .open
+        try:
+            asyncio.run_coroutine_threadsafe(
+                ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
+                asyncio.get_event_loop()
+            )
+        except Exception as e:
+            print(f"ERRORE nel callback tastiera: {e}")
+            # Potresti voler fermare i listener qui se la connessione è persa
+    # else:
+        # print("DEBUG: Connessione ws_global non aperta, tasto non inviato.")
 
 # Funzione per gestire il rilascio dei tasti (se necessario, al momento non usata)
 # def on_release(key):
@@ -116,8 +125,12 @@ async def technician_loop():
 
                         if frame is not None:
                             cv2.imshow("Schermo Remoto", frame)
+                            # Permetti al tecnico di chiudere la finestra con 'q' o chiudendola direttamente
                             if cv2.waitKey(1) & 0xFF == ord('q'): 
+                                print("DEBUG: Chiusura richiesta dall'utente.")
                                 break
+                    # else:
+                        # print("DEBUG: Ricevuto frame vuoto o non valido.") # Per debug
                 except websockets.exceptions.ConnectionClosedOK:
                     print("Disconnesso dal server normalmente durante la ricezione frame.")
                     break
@@ -129,7 +142,7 @@ async def technician_loop():
                 except Exception as e:
                     print(f"ERRORE TECNICO durante elaborazione frame: {e}") 
             
-            cv2.destroyAllWindows() 
+            cv2.destroyAllWindows() # Chiudi la finestra di OpenCV alla fine
 
     except ConnectionRefusedError: 
         print(f"ERRORE: Connessione rifiutata dal server {uri}. Assicurati che il server sia in esecuzione e la porta sia aperta.")
@@ -143,6 +156,10 @@ async def technician_loop():
         if 'keyboard_listener' in locals() and keyboard_listener.running:
             keyboard_listener.stop()
             print("DEBUG: Keyboard listener stopped.")
+        # Assicurati di chiudere la connessione WebSocket se è ancora aperta
+        if ws_global and not ws_global.closed:
+            await ws_global.close()
+            print("DEBUG: WebSocket connection closed.")
 
 if __name__ == "__main__":
     asyncio.run(technician_loop())
