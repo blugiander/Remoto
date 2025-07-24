@@ -1,4 +1,4 @@
-# client/main.py (modifica solo la riga asyncio.sleep)
+# client/main.py
 
 import asyncio
 import websockets
@@ -7,6 +7,17 @@ import base64
 import time
 from capture import ScreenCapture
 from config import SERVER_HOST, SERVER_PORT, CLIENT_ID
+import tkinter as tk # Aggiungi questa riga
+from tkinter import messagebox # Aggiungi questa riga
+
+# Funzione per mostrare il PIN in una finestra pop-up
+def show_pin_dialog(pin_code):
+    root = tk.Tk()
+    root.withdraw() # Nasconde la finestra principale di Tkinter
+    messagebox.showinfo("PIN per il Tecnico", f"Il PIN per la connessione è: {pin_code}\nComunicalo al tecnico.")
+    # Puoi aggiungere un piccolo ritardo o aspettare che l'utente chiuda la finestra,
+    # ma per un client che deve inviare lo schermo, basta visualizzare e continuare.
+    root.destroy()
 
 async def client_loop():
     uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
@@ -15,7 +26,6 @@ async def client_loop():
         async with websockets.connect(uri) as ws:
             print("✅ Connesso al server.")
 
-            # Fase di registrazione
             register_message = json.dumps({
                 "type": "register",
                 "role": "client",
@@ -24,12 +34,13 @@ async def client_loop():
             await ws.send(register_message)
             print(f"📝 Inviato messaggio di registrazione come client (ID: {CLIENT_ID}).")
 
-            # Ricevi il PIN dal server
             response = await ws.recv()
             data = json.loads(response)
             pin = data.get('pin')
             if pin:
-                print(f"PIN da comunicare al tecnico: {pin}")
+                # --- MODIFICA QUI: CHIAMARE LA FUNZIONE PER IL POP-UP ---
+                show_pin_dialog(pin)
+                # print(f"PIN da comunicare al tecnico: {pin}") # Rimuovi o commenta questa riga
             else:
                 print("ERRORE: Non ho ricevuto un PIN dal server.")
                 return
@@ -48,12 +59,8 @@ async def client_loop():
                         "content": encoded_frame
                     })
                     await ws.send(message)
-                    # print(f"🖼️ Inviato frame ({len(encoded_frame)} bytes).") # Manteniamo commentato
                 
-                # --- MODIFICA QUI: AUMENTA IL RITARDO ---
-                await asyncio.sleep(0.2) # Prima era 0.1. Proviamo con 0.2 (circa 5 FPS)
-                                          # Se ancora dà problemi, prova 0.3 o 0.5.
-                                          # L'obiettivo è trovare un buon compromesso tra fluidità e stabilità.
+                await asyncio.sleep(0.2)
 
     except websockets.exceptions.ConnectionClosedOK:
         print("Disconnesso dal server normalmente.")
@@ -63,4 +70,6 @@ async def client_loop():
         print(f"ERRORE CLIENT: Si è verificato un errore: {e}", exc_info=True)
 
 if __name__ == "__main__":
+    # La parte di show_pin_dialog deve essere avviata in un thread separato o gestita con attenzione
+    # se il client_loop è blocking, ma asyncio lo gestisce bene.
     asyncio.run(client_loop())
