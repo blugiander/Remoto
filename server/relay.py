@@ -18,30 +18,27 @@ class Relay:
             self.technicians[id] = websocket
         self.ws_to_id[websocket] = id
         self.ws_to_role[websocket] = role
-        print(f"Relay DEBUG: Registrato {role} con ID {id}.")
+        print(f"Relay DEBUG: Registrato {role} con ID {id}. Stato attuali tecnici: {list(self.technicians.keys())}.") # AGGIUNTO DEBUG
+        #print(f"Relay DEBUG: Mappa WS-to-ID: {self.ws_to_id}") # Debug aggiuntivo se necessario
+        #print(f"Relay DEBUG: Mappa WS-to-Role: {self.ws_to_role}") # Debug aggiuntivo se necessario
 
 
     async def forward(self, source_websocket, target_id_from_sender_message, message_content_json_string):
-        # source_websocket: il websocket del mittente (client o tecnico)
-        # target_id_from_sender_message: l'ID target come specificato nel messaggio originale dal mittente (può essere None per messaggi schermo del client)
-        # message_content_json_string: la stringa JSON della parte 'content' del messaggio (es. dati dello schermo o comando)
-
         target_ws = None
-        source_role = self.ws_to_role.get(source_websocket) # Ottieni il ruolo del mittente
+        source_role = self.ws_to_role.get(source_websocket)
+        source_id = self.ws_to_id.get(source_websocket)
 
-        print(f"Relay DEBUG: Tentativo di inoltro da {source_role} (ID: {self.ws_to_id.get(source_websocket)}).")
+        print(f"Relay DEBUG: Tentativo di inoltro da {source_role} (ID: {source_id}).")
+        #print(f"Relay DEBUG: Stato attuali tecnici prima del get: {list(self.technicians.keys())}.") # AGGIUNTO DEBUG QUI
 
         if source_role == 'client':
-            # Se il mittente è un client, il messaggio è un dato dello schermo.
-            # Deve essere inoltrato al tecnico.
             # Assumiamo che 'tecnico-001' sia l'ID del tecnico che riceve i dati dello schermo.
-            target_ws = self.technicians.get('tecnico-001')
-            print(f"Relay DEBUG: Mittente è client. Targeting tecnico 'tecnico-001'.")
+            target_id_for_client_message = 'tecnico-001' # ID fisso del tecnico per inoltro schermo
+            target_ws = self.technicians.get(target_id_for_client_message)
+            print(f"Relay DEBUG: Mittente è client. Targeting tecnico '{target_id_for_client_message}'. Trovato WS? {'Sì' if target_ws else 'No'}.") # AGGIUNTO DEBUG
         elif source_role == 'technician':
-            # Se il mittente è un tecnico, il messaggio è un comando.
-            # Deve essere inoltrato al client specifico indicato da target_id_from_sender_message.
             target_ws = self.clients.get(target_id_from_sender_message)
-            print(f"Relay DEBUG: Mittente è tecnico. Targeting client '{target_id_from_sender_message}'.")
+            print(f"Relay DEBUG: Mittente è tecnico. Targeting client '{target_id_from_sender_message}'. Trovato WS? {'Sì' if target_ws else 'No'}.") # AGGIUNTO DEBUG
         else:
             print(f"Relay DEBUG: Ruolo mittente sconosciuto per websocket {source_websocket}.")
 
@@ -49,7 +46,7 @@ class Relay:
             await target_ws.send(message_content_json_string)
             print(f"Relay DEBUG: Messaggio inoltrato con successo a {self.ws_to_id.get(target_ws)}.")
         else:
-            print(f"Relay DEBUG: Destinatario '{target_id_from_sender_message}' non trovato o non accoppiato per inoltro (ruolo mittente: {source_role}).")
+            print(f"Relay DEBUG: Destinatario '{target_id_from_sender_message if source_role == 'technician' else target_id_for_client_message}' non trovato o non accoppiato per inoltro (ruolo mittente: {source_role}).") # MODIFICATA STAMPA PER CHIAREZZA
 
     def unregister(self, websocket):
         if websocket in self.ws_to_id:
