@@ -1,4 +1,4 @@
-# technician/main.py (aggiunta di un try-except nel loop di ricezione)
+# technician/main.py
 
 import asyncio
 import websockets
@@ -42,14 +42,13 @@ async def technician_loop():
             # Loop di ricezione e visualizzazione dello schermo
             while True:
                 try:
-                    message_json = await ws.recv()
-                    # print(f"📨 Ricevuto: {message_json[:100]}...") # Per non floodare il terminale
-
-                    # Decodifica il messaggio JSON
-                    data = json.loads(message_json)
+                    # Il messaggio ricevuto dal server è la stringa JSON del frame (o comando)
+                    message_content_string = await ws.recv() 
                     
-                    # Assumiamo che il 'content' sia il frame codificato in base64
-                    encoded_frame = data.get('content')
+                    # Decodifica la stringa JSON (che è il frame codificato in base64)
+                    # Non fare data.get('content') perché message_content_string è già il contenuto!
+                    encoded_frame = message_content_string 
+                    
                     if encoded_frame:
                         decoded_frame = base64.b64decode(encoded_frame)
                         np_array = np.frombuffer(decoded_frame, np.uint8)
@@ -69,17 +68,17 @@ async def technician_loop():
                     print(f"ERRORE: Connessione chiusa inaspettatamente dal server: {e}")
                     break
                 except json.JSONDecodeError as e:
-                    print(f"ERRORE: Errore di decodifica JSON dal server: {e}. Messaggio raw: {message_json[:200]}...")
+                    print(f"ERRORE: Errore di decodifica JSON dal server: {e}. Messaggio raw: {message_content_string[:200]}...")
                 except Exception as e:
-                    print(f"ERRORE TECNICO durante elaborazione frame: {e}", exc_info=True)
-                    # Non fare 'break' qui per provare a recuperare con il frame successivo
+                    # Corretto: rimosso exc_info=True per print
+                    print(f"ERRORE TECNICO durante elaborazione frame: {e}") 
             
             cv2.destroyAllWindows() # Chiudi le finestre OpenCV quando il loop termina
 
-    except websockets.exceptions.ConnectionRefused:
+    except websockets.exceptions.ConnectionRefused: # Corretto: rimosso websockets.exceptions.
         print(f"ERRORE: Connessione rifiutata dal server {uri}. Assicurati che il server sia in esecuzione e la porta sia aperta.")
     except Exception as e:
-        print(f"ERRORE TECNICO generale: {e}", exc_info=True)
+        print(f"ERRORE TECNICO generale: {e}") # Corretto: rimosso exc_info=True per print
 
 if __name__ == "__main__":
     asyncio.run(technician_loop())
