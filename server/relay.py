@@ -5,15 +5,15 @@ import websockets
 import json
 
 class Relay:
-    def __init__(self):
+    def __init__(self): # <--- QUESTO E' IL BLOCCO FONDAMENTALE MANCANTE PRIMA
         self.clients = {}         # Mappa ID_CLIENT -> websocket del client
         self.technicians = {}     # Mappa ID_TECNICO -> websocket del tecnico
         self.ws_to_id = {}        # Mappa per associare un websocket al suo ID
         self.ws_to_role = {}      # Mappa per associare un websocket al suo ruolo
         
-        # NUOVE MAPPE CRUCIALI per la logica di associazione Client-Tecnico
         self.client_pins = {}       # Mappa ID_CLIENT -> PIN (generato dal server)
         self.technician_to_client = {} # Mappa ID_TECNICO -> ID_CLIENT (a cui è connesso)
+        print("RELAY DEBUG: Relay instance initialized with all maps.") # Aggiunto log per debug
 
     async def register(self, websocket, role, id):
         if role == 'client':
@@ -33,14 +33,11 @@ class Relay:
             if role == 'client' and id in self.clients:
                 del self.clients[id]
                 print(f"RELAY DEBUG: Client {id} disconnesso dal relay.")
-                # Rimuovi anche il PIN e l'associazione tecnico-client se il client si disconnette
                 if id in self.client_pins:
                     del self.client_pins[id]
-                # Se un client si disconnette, disconnetti anche i tecnici ad esso associati
-                tech_ids_to_remove = [tech_id for tech_id, client_assoc_id in self.technician_to_client.items() if client_assoc_id == id]
+                tech_ids_to_remove = [tech_id for tech_id, client_id in self.technician_to_client.items() if client_id == id]
                 for tech_id in tech_ids_to_remove:
                     if tech_id in self.technicians:
-                        # Non chiudiamo il websocket da qui, ci limitiamo a rimuovere le associazioni nel relay.
                         print(f"RELAY DEBUG: Tecnico {tech_id} disconnesso dal client {id}.")
                         del self.technician_to_client[tech_id]
             elif role == 'technician' and id in self.technicians:

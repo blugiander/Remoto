@@ -89,11 +89,9 @@ async def handle_message(websocket, message):
 
     msg_type = data.get('type')
     
+    # Modificato ws_id in ws_to_id per consistenza con Relay
     sender_role = relay.ws_to_role.get(websocket)
-    sender_id = relay.ws_id.get(websocket) # Correzione: deve essere ws_id, non ws_to_id se questa era la mappa
-    if sender_id is None: # Se non trovato, prova ws_to_id per compatibilità
-        sender_id = relay.ws_to_id.get(websocket)
-
+    sender_id = relay.ws_to_id.get(websocket) 
 
     print(f"Server DEBUG: Ricevuto messaggio. Tipo: {msg_type}, Ruolo mittente: {sender_role}, ID mittente: {sender_id}, da {websocket.remote_address}")
 

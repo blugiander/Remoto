@@ -70,7 +70,6 @@ async def technician_loop():
             asyncio_loop = asyncio.get_event_loop()
             print("✅ Tecnico: Connesso.")
 
-            # Fase di registrazione
             pin = input("🔑 Tecnico: Inserisci il PIN ricevuto dal cliente: ")
             register_message = json.dumps({
                 "type": "register",
@@ -81,7 +80,6 @@ async def technician_loop():
             await ws.send(register_message)
             print(f"📝 Tecnico: Inviato messaggio di registrazione (ID: {TECHNICIAN_ID}).")
 
-            # Attendere la conferma di connessione dal server
             response = await ws.recv()
             data = json.loads(response)
             if data.get('status') == 'connected':
@@ -102,12 +100,10 @@ async def technician_loop():
                 print("ERRORE TECNICO: Risposta inattesa dal server durante la registrazione.")
                 return
 
-            # Loop di ricezione e visualizzazione dello schermo
             while True:
                 try:
                     message_content_string = await ws.recv() 
                     
-                    # Decodifica l'intero messaggio JSON
                     received_data = json.loads(message_content_string)
                     
                     if received_data.get('type') == 'message' and 'content' in received_data:
@@ -128,13 +124,12 @@ async def technician_loop():
                         else:
                             print("DEBUG TECNICO: Ricevuto frame codificato Base64 vuoto.")
                     elif received_data.get('type') == 'command':
-                        # Se il server per qualche motivo rimbalza un comando al tecnico
                         print(f"DEBUG TECNICO: Ricevuto un comando eco: {received_data.get('content')}")
                     else:
                         print(f"DEBUG TECNICO: Ricevuto messaggio non gestito. Tipo: {received_data.get('type')}. Contenuto: {message_content_string[:200]}...")
 
                 except websockets.exceptions.ConnectionClosedOK:
-                    print("Tecnico: Disconnesso dal server normalmente durante la ricezione frame.")
+                    print("Tecnico: Disconnesso dal server normalmente durante la recezione frame.")
                     break
                 except websockets.exceptions.ConnectionClosedError as e:
                     print(f"ERRORE TECNICO: Connessione chiusa inaspettatamente dal server: {e}")
@@ -142,14 +137,14 @@ async def technician_loop():
                 except json.JSONDecodeError as e:
                     print(f"ERRORE TECNICO: Errore di decodifica JSON dal server: {e}. Messaggio raw: {message_content_string[:200]}...")
                 except Exception as e:
-                    print(f"ERRORE TECNICO durante elaborazione frame o visualizzazione: {e}", exc_info=True) # Aggiunto exc_info=True
+                    print(f"ERRORE TECNICO durante elaborazione frame o visualizzazione: {e}", exc_info=True)
             
             cv2.destroyAllWindows()
 
     except ConnectionRefusedError: 
         print(f"ERRORE TECNICO: Connessione rifiutata dal server {uri}. Assicurati che il server sia in esecuzione e la porta sia aperta.")
     except Exception as e:
-        print(f"ERRORE TECNICO generale nella loop principale: {e}", exc_info=True) # Aggiunto exc_info=True
+        print(f"ERRORE TECNICO generale nella loop principale: {e}", exc_info=True)
     finally:
         if 'mouse_listener' in locals() and mouse_listener.running:
             mouse_listener.stop()
