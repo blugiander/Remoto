@@ -9,18 +9,42 @@ import pyautogui
 import mss
 import cv2
 import numpy as np
+import threading # Per gestire il mouse move in background
 from config import SERVER_HOST, SERVER_PORT, CLIENT_ID # Importa dalla tua config.py
+
+# Variabili per il controllo del mouse/tastiera
+mouse_move_thread = None
+mouse_move_event = threading.Event()
+mouse_target_x = 0
+mouse_target_y = 0
 
 # Funzione per eseguire il click del mouse
 def perform_click(x, y, button):
     print(f"CLIENT DEBUG: Eseguo click su: {x}, {y} con bottone: {button}")
+    # pyautogui.click usa internamente moveTo e mouseDown/mouseUp
     pyautogui.click(x=x, y=y, button=button)
     print(f"CLIENT DEBUG: Click eseguito: x={x}, y={y}, button={button}")
 
-# Funzione per eseguire il movimento del mouse
+# Funzione per eseguire il movimento del mouse in un thread separato
+def _mouse_move_worker():
+    global mouse_target_x, mouse_target_y
+    while not mouse_move_event.is_set():
+        if pyautogui.position() != (mouse_target_x, mouse_target_y):
+            # Usiamo pyautogui.moveTo con durata 0 per un movimento istantaneo o quasi
+            pyautogui.moveTo(mouse_target_x, mouse_target_y, duration=0.01) # Piccola durata per ammorbidire
+        time.sleep(0.01) # Piccolo ritardo per non saturare la CPU
+
 def perform_mouse_move(x, y):
-    # print(f"CLIENT DEBUG: Eseguo movimento mouse a: {x}, {y}") # Molto verboso
-    pyautogui.moveTo(x, y)
+    global mouse_target_x, mouse_target_y, mouse_move_thread, mouse_move_event
+    mouse_target_x = x
+    mouse_target_y = y
+
+    if mouse_move_thread is None or not mouse_move_thread.is_alive():
+        mouse_move_event.clear()
+        mouse_move_thread = threading.Thread(target=_mouse_move_worker, daemon=True)
+        mouse_move_thread.start()
+    # print(f"CLIENT DEBUG: Aggiornato target mouse a: {x}, {y}") # Molto verboso se in streaming
+
 
 # Funzione per eseguire lo scroll del mouse
 def perform_mouse_scroll(direction):
@@ -34,6 +58,7 @@ def perform_mouse_scroll(direction):
 def perform_key_press(key):
     print(f"CLIENT DEBUG: Eseguo pressione tasto: {key}")
     try:
+        # Mappatura per tasti speciali per pyautogui
         pyautogui_key_map = {
             'space': ' ', 'enter': 'enter', 'backspace': 'backspace',
             'tab': 'tab', 'caps_lock': 'capslock', 'num_lock': 'numlock',
@@ -52,36 +77,48 @@ def perform_key_press(key):
         
         normalized_key = key.lower()
 
-        if normalized_key.startswith('key.'):
+        if normalized_key.startswith('key.'): # Rimuove il prefisso 'Key.' se presente (da pynput/keyboard)
             normalized_key = normalized_key.replace('key.', '')
 
         if normalized_key in pyautogui_key_map:
             pyautogui.press(pyautogui_key_map[normalized_key])
         else:
-            pyautogui.press(key) 
+            pyautogui.press(key) # Prova a premere il tasto direttamente
 
         print(f"CLIENT DEBUG: Tasto '{key}' simulato.")
     except Exception as e:
         print(f"CLIENT ERRORE: Impossibile simulare tasto '{key}': {e}")
 
 
-async def capture_and_send_screen(websocket):
+async def capture_and_send_screen(websocket_connection):
     print(f"CLIENT: Avvio loop di invio schermo per ID: {CLIENT_ID}")
     with mss.mss() as sct:
+        # Configurazione per catturare il primo monitor (di solito il principale)
+        # sct.monitors[0] è l'intero desktop, sct.monitors[1] è il primo monitor, ecc.
+        # Se hai un solo monitor, usa sct.monitors[1] per catturarlo interamente.
         if len(sct.monitors) < 2:
-            print("CLIENT AVVISO: Meno di due monitor rilevati. Utilizzo il primo monitor disponibile.")
+            print("CLIENT AVVISO: Meno di due monitor rilevati (solo desktop o un monitor). Utilizzo il primo monitor disponibile (sct.monitors[1]).")
             monitor_index = 1
         else:
+            # Assumiamo il monitor principale sia sct.monitors[1] per default.
+            # Se vuoi selezionare un monitor specifico (es. il secondo), cambia in 2, 3, ecc.
             monitor_index = 1 
+        
+        # Verifica che il monitor esista prima di provare a usarlo
+        if monitor_index >= len(sct.monitors):
+            print(f"CLIENT ERRORE: Monitor {monitor_index} non trovato. Non è possibile catturare lo schermo.")
+            return # Esci dalla funzione se il monitor non esiste
 
         monitor = sct.monitors[monitor_index] 
         
-        # Modifica qui: usa websocket.closed per verificare che la connessione sia aperta
-        while not websocket.closed:
+        while not websocket_connection.closed: 
             try:
                 sct_img = sct.grab(monitor)
                 frame = np.array(sct_img)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR) # Converti BGRA (con alpha) a BGR
+
+                # Codifica il frame come JPEG per ridurre la dimensione e la latenza
+                # Qualità JPEG 70 è un buon compromesso tra qualità e dimensione
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 encoded_frame = base64.b64encode(buffer).decode('utf-8')
 
@@ -92,9 +129,9 @@ async def capture_and_send_screen(websocket):
                     "content": encoded_frame
                 })
 
-                await websocket.send(message)
-                # print(f"CLIENT: Inviato frame schermo (dimensione: {len(encoded_frame)} bytes)") # Troppo verboso
-                await asyncio.sleep(0.04)
+                await websocket_connection.send(message)
+                # print(f"CLIENT: Inviato frame schermo (dimensione: {len(encoded_frame)} bytes)") # Troppo verboso, decommenta per debug
+                await asyncio.sleep(0.04) # Circa 25 FPS (1/0.04 = 25)
 
             except websockets.exceptions.ConnectionClosedOK:
                 print("CLIENT: Connessione chiusa normalmente (loop invio schermo).")
@@ -104,15 +141,14 @@ async def capture_and_send_screen(websocket):
                 break
             except Exception as e:
                 print(f"CLIENT ERRORE durante cattura e invio schermo: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(1) # Riprova dopo un breve ritardo
 
-async def receive_commands(websocket):
+async def receive_commands(websocket_connection):
     print("CLIENT: Avvio loop di ricezione comandi.")
-    # Modifica qui: usa websocket.closed per verificare che la connessione sia aperta
-    while not websocket.closed:
+    while not websocket_connection.closed:
         try:
-            command_message = await websocket.recv()
-            command_data = json.loads(command_message)
+            command_message_str = await websocket_connection.recv()
+            command_data = json.loads(command_message_str)
             
             if command_data.get('type') == 'command' and 'data' in command_data:
                 command_type = command_data.get('command_type')
@@ -158,7 +194,7 @@ async def receive_commands(websocket):
             print(f"CLIENT ERRORE: Connessione chiusa inaspettatamente durante ricezione comandi: {e}")
             break
         except json.JSONDecodeError:
-            print(f"CLIENT ERRORE: Ricevuto JSON non valido come comando: {command_message[:100]}...")
+            print(f"CLIENT ERRORE: Ricevuto JSON non valido come comando: {command_message_str[:100]}...")
         except Exception as e:
             print(f"CLIENT ERRORE durante ricezione comandi: {e}")
             await asyncio.sleep(1)
@@ -169,7 +205,7 @@ async def connect_and_register_client():
     reconnect_attempts = 10
     for attempt in range(reconnect_attempts):
         try:
-            async with websockets.connect(uri) as websocket:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as websocket: # Aggiungi ping_interval/timeout
                 print("✅ CLIENT: Connesso al server.")
 
                 registration_message = json.dumps({
@@ -190,36 +226,36 @@ async def connect_and_register_client():
                     send_task = asyncio.create_task(capture_and_send_screen(websocket))
                     receive_task = asyncio.create_task(receive_commands(websocket))
 
-                    # Se uno dei task finisce (es. connessione chiusa), vogliamo che anche l'altro termini.
-                    # Questo blocca fino a quando non termina uno dei due.
+                    # Attende che uno dei task (send o receive) si completi (es. per disconnessione)
                     done, pending = await asyncio.wait([send_task, receive_task], return_when=asyncio.FIRST_COMPLETED)
                     
-                    # Cerca l'eccezione se un task è fallito
+                    # Logga eventuali eccezioni dai task completati
                     for task in done:
                         if task.exception():
                             print(f"ERRORE CLIENT: Un task parallelo è terminato con un'eccezione: {task.exception()}")
                     
-                    # Cancella i task rimanenti se uno è terminato
+                    # Cancella i task che sono ancora in esecuzione
                     for task in pending:
                         task.cancel()
                         try:
-                            await task # Attendere che il task cancellato si fermi
+                            await task # Attende che il task cancellato si fermi pulitamente
                         except asyncio.CancelledError:
                             print(f"CLIENT: Task {task.get_name() if hasattr(task, 'get_name') else ''} è stato cancellato.")
 
-                else:
-                    print(f"ERRORE CLIENT: Registrazione fallita o PIN non ricevuto. Risposta: {registration_response}")
-                    break
+                    print(f"CLIENT: Sessione WebSocket per client {CLIENT_ID} terminata. Riconnessione...")
 
-        # Modifica qui: usa ConnectionRefusedError direttamente o BaseException per catturare tutto
-        # ConnectionRefusedError è una sottoclasse di OSError.
-        except OSError as e: # Catch OSError che include ConnectionRefusedError
+                else:
+                    print(f"ERRORE CLIENT: Registrazione fallita o PIN non ricevuto. Risposta: {registration_response}. Riprovo in 5 secondi...")
+                    await asyncio.sleep(5)
+                    continue # Prova la prossima iterazione per riconnettersi
+
+        except OSError as e: # Cattura errori di sistema come "Connection refused"
             if "Connection refused" in str(e):
                 print(f"ERRORE CLIENT: Connessione rifiutata dal server ({uri}). Assicurati che il server sia in esecuzione e accessibile. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
             else:
                 print(f"ERRORE CLIENT: Errore di sistema durante la connessione ({uri}): {e}. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
             await asyncio.sleep(5)
-        except websockets.exceptions.ConnectionClosed as e: # Questo include ConnectionClosedOK e ConnectionClosedError
+        except websockets.exceptions.ConnectionClosed as e: # Include ConnectionClosedOK e ConnectionClosedError
             print(f"ERRORE CLIENT: Connessione chiusa inaspettatamente ({uri}): {e}. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
             await asyncio.sleep(5)
         except Exception as e:
@@ -236,4 +272,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("CLIENT: Programma interrotto dall'utente.")
     finally:
+        # Assicurati di fermare il thread del mouse in caso di interruzione
+        global mouse_move_event
+        mouse_move_event.set()
+        if mouse_move_thread and mouse_move_thread.is_alive():
+            mouse_move_thread.join(timeout=1) # Attendi un po' per la terminazione
         print("CLIENT: Programma terminato.")

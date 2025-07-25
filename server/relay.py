@@ -1,97 +1,82 @@
-# server/relay.py
+# server/relay.py (OPZIONALE - NON NECESSARIO PER IL FUNZIONAMENTO BASE)
 
 import asyncio
 import websockets
 import json
+from config import SERVER_HOST, SERVER_PORT # Importa dalla tua config.py
 
-class Relay:
-    def __init__(self):
-        self.clients = {}         # Mappa ID_CLIENT -> websocket del client
-        self.technicians = {}     # Mappa ID_TECNICO -> websocket del tecnico
-        self.ws_to_id = {}        # Mappa per associare un websocket al suo ID
-        self.ws_to_role = {}      # Mappa per associare un websocket al suo ruolo
-        
-        self.client_pins = {}      # Mappa ID_CLIENT -> PIN (generato dal server)
-        self.technician_to_client = {} # Mappa ID_TECNICO -> ID_CLIENT (a cui è connesso)
-        print("RELAY DEBUG: Relay instance initialized with all maps.") # Aggiunto log per debug
+RELAY_PORT = 8000 # Porta su cui il relay ascolterà le connessioni in entrata
 
-    async def register(self, websocket, role, id):
-        if role == 'client':
-            self.clients[id] = websocket
-        elif role == 'technician':
-            self.technicians[id] = websocket
-        self.ws_to_id[websocket] = id
-        self.ws_to_role[websocket] = role
-        print(f"RELAY DEBUG: Registrato {role} con ID {id}. Stato attuali tecnici: {list(self.technicians.keys())}, clienti: {list(self.clients.keys())}")
+async def relay_handler(in_websocket, path):
+    print(f"RELAY: Nuova connessione da {in_websocket.remote_address} al relay. Reindirizzo a {SERVER_HOST}:{SERVER_PORT}")
+    out_websocket = None
+    try:
+        # Connessione al server principale
+        async with websockets.connect(f"ws://{SERVER_HOST}:{SERVER_PORT}") as out_websocket:
+            print(f"RELAY: Connesso con successo al server principale.")
 
-    async def deregister(self, websocket):
-        # Quando un websocket si disconnette, rimuovilo da tutte le mappe
-        if websocket in self.ws_to_id:
-            id = self.ws_to_id[websocket]
-            role = self.ws_to_role[websocket]
+            # Task per inoltrare messaggi dal client al server principale
+            async def client_to_server():
+                try:
+                    while True:
+                        message = await in_websocket.recv()
+                        await out_websocket.send(message)
+                        # print(f"RELAY: Inoltrato messaggio client -> server")
+                except websockets.exceptions.ConnectionClosedOK:
+                    print("RELAY: Connessione client chiusa normalmente.")
+                except websockets.exceptions.ConnectionClosedError as e:
+                    print(f"RELAY ERRORE: Connessione client chiusa inaspettatamente: {e}")
+                except Exception as e:
+                    print(f"RELAY ERRORE: Errore nel inoltro client -> server: {e}")
+                finally:
+                    if not in_websocket.closed:
+                        await in_websocket.close()
+                    if not out_websocket.closed:
+                        await out_websocket.close()
 
-            if role == 'client' and id in self.clients:
-                del self.clients[id]
-                print(f"RELAY DEBUG: Client {id} disconnesso dal relay.")
-                if id in self.client_pins:
-                    del self.client_pins[id]
-                    print(f"RELAY DEBUG: PIN {self.client_pins.get(id, 'N/A')} rimosso per client {id}.")
-                
-                # Rimuovi eventuali tecnici associati a questo client disconnesso
-                tech_ids_to_remove = []
-                for tech_id, client_assoc_id in self.technician_to_client.items():
-                    if client_assoc_id == id:
-                        tech_ids_to_remove.append(tech_id)
-                for tech_id in tech_ids_to_remove:
-                    if tech_id in self.technician_to_client:
-                        del self.technician_to_client[tech_id]
-                        print(f"RELAY DEBUG: Associazione tecnico {tech_id} a client {id} rimossa.")
+            # Task per inoltrare messaggi dal server principale al client
+            async def server_to_client():
+                try:
+                    while True:
+                        message = await out_websocket.recv()
+                        await in_websocket.send(message)
+                        # print(f"RELAY: Inoltrato messaggio server -> client")
+                except websockets.exceptions.ConnectionClosedOK:
+                    print("RELAY: Connessione server chiusa normalmente.")
+                except websockets.exceptions.ConnectionClosedError as e:
+                    print(f"RELAY ERRORE: Connessione server chiusa inaspettatamente: {e}")
+                except Exception as e:
+                    print(f"RELAY ERRORE: Errore nel inoltro server -> client: {e}")
+                finally:
+                    if not in_websocket.closed:
+                        await in_websocket.close()
+                    if not out_websocket.closed:
+                        await out_websocket.close()
 
-            elif role == 'technician' and id in self.technicians:
-                del self.technicians[id]
-                print(f"RELAY DEBUG: Tecnico {id} disconnesso dal relay.")
-                if id in self.technician_to_client:
-                    del self.technician_to_client[id]
-                    print(f"RELAY DEBUG: Associazione tecnico {id} rimossa.")
-            
-            # Rimuovi anche da ws_to_id e ws_to_role
-            if websocket in self.ws_to_id:
-                del self.ws_to_id[websocket]
-            if websocket in self.ws_to_role:
-                del self.ws_to_role[websocket]
-            
-            print(f"RELAY DEBUG: Stato attuali tecnici dopo disconnessione: {list(self.technicians.keys())}")
-            print(f"RELAY DEBUG: Stato attuali clienti dopo disconnessione: {list(self.clients.keys())}")
-        else:
-            print(f"RELAY DEBUG: Tentativo di deregistrare un websocket sconosciuto: {websocket.remote_address if hasattr(websocket, 'remote_address') else 'N/A'}")
+            # Esegui entrambi i task in parallelo
+            await asyncio.gather(client_to_server(), server_to_client())
 
+    except websockets.exceptions.ConnectionRefusedError:
+        print(f"RELAY ERRORE: Connessione rifiutata dal server principale {SERVER_HOST}:{SERVER_PORT}. Assicurati che il server sia in esecuzione.")
+        await in_websocket.close()
+    except Exception as e:
+        print(f"RELAY ERRORE: Errore nel handler del relay: {e}")
+        if out_websocket and not out_websocket.closed:
+            await out_websocket.close()
+        if not in_websocket.closed:
+            await in_websocket.close()
+    finally:
+        print(f"RELAY: Connessione dal client {in_websocket.remote_address} terminata.")
 
-    async def forward(self, source_websocket, target_id, message_json_string):
-        source_role = self.ws_to_role.get(source_websocket)
-        source_id = self.ws_to_id.get(source_websocket)
+async def main():
+    print(f"RELAY: Avvio server Relay su ws://{SERVER_HOST}:{RELAY_PORT}")
+    async with websockets.serve(relay_handler, SERVER_HOST, RELAY_PORT): # SERVER_HOST per ascoltare su tutte le interfacce disponibili
+        await asyncio.Future()  # Esegui indefinitamente
 
-        if not source_role or not source_id:
-            print("RELAY ERRORE: Messaggio da un websocket non registrato durante l'inoltro.")
-            return
-
-        if source_role == 'client':
-            target_ws = self.technicians.get(target_id) 
-            if target_ws:
-                if target_ws.open: # Controlla se il target_ws è ancora aperto prima di inviare
-                    await target_ws.send(message_json_string) 
-                else:
-                    print(f"RELAY DEBUG: Websocket del tecnico {target_id} è chiuso. Frame non inoltrato.")
-            else:
-                print(f"RELAY DEBUG: Tecnico {target_id} non trovato. Frame non inoltrato.")
-
-        elif source_role == 'technician':
-            target_ws = self.clients.get(target_id)
-            if target_ws:
-                if target_ws.open: # Controlla se il target_ws è ancora aperto prima di inviare
-                    await target_ws.send(message_json_string) 
-                else:
-                    print(f"RELAY DEBUG: Websocket del client {target_id} è chiuso. Comando non inoltrato.")
-            else:
-                print(f"RELAY DEBUG: Client {target_id} non trovato. Comando non inoltrato.")
-        else:
-            print(f"RELAY ERRORE: Ruolo sconosciuto ({source_role}). Messaggio non inoltrato.")
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("RELAY: Server Relay interrotto manualmente.")
+    except Exception as e:
+        print(f"RELAY ERRORE CRITICO: {e}")
