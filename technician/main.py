@@ -21,8 +21,12 @@ def on_click(x, y, button, pressed):
             "y": y,
             "button": button_name
         }
+        # Verifica che ws_global sia un WebSocket valido e aperto prima di inviare
         if ws_global and ws_global.state == websockets.protocol.State.OPEN and asyncio_loop: 
             try:
+                # Assicurati che il target_id sia corretto.
+                # Per ora, è hardcoded come "cliente-001".
+                # In una versione più avanzata, potresti volerlo selezionare.
                 asyncio.run_coroutine_threadsafe(
                     ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
                     asyncio_loop 
@@ -47,6 +51,7 @@ def on_press(key):
     }
     if ws_global and ws_global.state == websockets.protocol.State.OPEN and asyncio_loop: 
         try:
+            # Assicurati che il target_id sia corretto.
             asyncio.run_coroutine_threadsafe(
                 ws_global.send(json.dumps({"type": "command", "target_id": "cliente-001", "content": json.dumps(event_data)})),
                 asyncio_loop
@@ -100,6 +105,7 @@ async def technician_loop():
                 print("ERRORE TECNICO: Risposta inattesa dal server durante la registrazione.")
                 return
 
+            # Loop principale per ricevere messaggi (schermo e altri)
             while True:
                 try:
                     message_content_string = await ws.recv() 
@@ -107,6 +113,7 @@ async def technician_loop():
                     received_data = json.loads(message_content_string)
                     
                     if received_data.get('type') == 'message' and 'content' in received_data:
+                        # Questo è il frame dello schermo dal client
                         encoded_frame = received_data['content']
                         
                         if encoded_frame:
@@ -116,6 +123,8 @@ async def technician_loop():
 
                             if frame is not None:
                                 cv2.imshow("Schermo Remoto", frame)
+                                # cv2.waitKey(1) permette di aggiornare la finestra
+                                # e cattura gli eventi tastiera (come 'q' per uscire)
                                 if cv2.waitKey(1) & 0xFF == ord('q'): 
                                     print("DEBUG TECNICO: Chiusura richiesta dall'utente.")
                                     break
@@ -124,7 +133,8 @@ async def technician_loop():
                         else:
                             print("DEBUG TECNICO: Ricevuto frame codificato Base64 vuoto.")
                     elif received_data.get('type') == 'command':
-                        print(f"DEBUG TECNICO: Ricevuto un comando eco: {received_data.get('content')}")
+                        # Se il tecnico riceve un comando da un altro tecnico (o da se stesso tramite echo del server)
+                        print(f"DEBUG TECNICO: Ricevuto un comando eco dal server: {received_data.get('content')}")
                     else:
                         print(f"DEBUG TECNICO: Ricevuto messaggio non gestito. Tipo: {received_data.get('type')}. Contenuto: {message_content_string[:200]}...")
 
@@ -139,6 +149,7 @@ async def technician_loop():
                 except Exception as e:
                     print(f"ERRORE TECNICO durante elaborazione frame o visualizzazione: {e}", exc_info=True)
             
+            # Chiudi la finestra OpenCV quando il loop termina
             cv2.destroyAllWindows()
 
     except ConnectionRefusedError: 
@@ -146,12 +157,14 @@ async def technician_loop():
     except Exception as e:
         print(f"ERRORE TECNICO generale nella loop principale: {e}", exc_info=True)
     finally:
+        # Assicurati che i listener siano fermati correttamente
         if 'mouse_listener' in locals() and mouse_listener.running:
             mouse_listener.stop()
             print("DEBUG TECNICO: Mouse listener stopped.")
         if 'keyboard_listener' in locals() and keyboard_listener.running:
             keyboard_listener.stop()
             print("DEBUG TECNICO: Keyboard listener stopped.")
+        # Chiudi la connessione WebSocket se è ancora aperta
         if ws_global and ws_global.state != websockets.protocol.State.CLOSED: 
             await ws_global.close()
             print("DEBUG TECNICO: WebSocket connection closed.")
