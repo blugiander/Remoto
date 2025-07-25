@@ -1,24 +1,11 @@
 import websockets
 import asyncio
 import json
-import random # Assicurati che random sia importato se lo usi per i PIN
+import random
 from relay import Relay
 
 relay = Relay()
 
-# Assicurati che queste mappe esistano nella classe Relay o vengano inizializzate qui
-# Se non esistono già, dovrebbero essere aggiunte a relay.py.__init__
-# Esempio:
-# class Relay:
-#     def __init__(self):
-#         self.clients = {}
-#         self.technicians = {}
-#         self.ws_to_id = {}
-#         self.ws_to_role = {}
-#         self.client_pins = {} # Aggiunto per gestire i PIN
-#         self.technician_to_client = {} # Aggiunto per associare tecnico a client
-
-# Funzione per gestire la connessione di un singolo websocket
 async def handler(websocket):
     global relay
     try:
@@ -102,24 +89,17 @@ async def handle_message(websocket, message):
 
     msg_type = data.get('type')
     
-    # *** MODIFICA CRITICA QUI: Otteniamo ruolo e ID del mittente dalle mappe del relay ***
-    # Non ci fidiamo dei campi 'role' e 'id' all'interno del payload del messaggio stesso,
-    # perché il tecnico non li include nei messaggi di 'command'.
     sender_role = relay.ws_to_role.get(websocket)
     sender_id = relay.ws_to_id.get(websocket)
 
-    # Stampa i dati del mittente per debug
     print(f"Server DEBUG: Ricevuto messaggio. Tipo: {msg_type}, Ruolo mittente: {sender_role}, ID mittente: {sender_id}, da {websocket.remote_address}")
 
-    msg_content = data.get('content') # Contenuto del messaggio (frame o dati del comando)
-    target_id = data.get('target_id') # L'ID del destinatario (tecnico per frame, client per comando)
+    msg_content = data.get('content')
+    target_id = data.get('target_id')
 
     if msg_type == 'message':
-        # Questo è un messaggio dello schermo, inviato dal client
         if sender_role == 'client':
-            # L'ID del client mittente è sender_id
             if sender_id:
-                # Trova il tecnico associato a questo client
                 associated_technician_id = None
                 for tech_id, client_assoc_id in relay.technician_to_client.items():
                     if client_assoc_id == sender_id:
@@ -127,8 +107,6 @@ async def handle_message(websocket, message):
                         break
                 
                 if associated_technician_id:
-                    # Inoltra l'intero messaggio originale (come stringa) al tecnico
-                    # Il relay gestirà il contenuto per il tecnico
                     await relay.forward(websocket, associated_technician_id, message) 
                     print(f"Server DEBUG: Ricevuto messaggio di tipo '{msg_type}' (schermo) da client (ID: {sender_id}).")
                 else:
@@ -139,14 +117,11 @@ async def handle_message(websocket, message):
             print(f"Server ERRORE: Messaggio di tipo 'message' ricevuto da ruolo non client: {sender_role}.")
 
     elif msg_type == 'command': 
-        # Questo è un comando, inviato dal tecnico
         if sender_role == 'technician':
-            # sender_id è l'ID del tecnico mittente. target_id è l'ID del client di destinazione.
             if msg_content and target_id:
-                # Inoltra l'intero messaggio originale (come stringa) al client di destinazione
                 await relay.forward(websocket, target_id, message) 
                 print(f"Server DEBUG: Ricevuto messaggio di tipo '{msg_type}' da {sender_role} (ID: {sender_id}).")
-                print(f"Server DEBUG: Inoltrato comando da tecnico {sender_id} a client {target_id}.") # Questo è il log chiave!
+                print(f"Server DEBUG: Inoltrato comando da tecnico {sender_id} a client {target_id}.")
             else:
                 print(f"Server DEBUG: Comando non valido da {sender_role} (ID: {sender_id}) o contenuto/target vuoto.")
         else:
@@ -157,16 +132,16 @@ async def handle_message(websocket, message):
 
 # Funzione principale per avviare il server
 async def main():
-    # Aggiungi client_pins e technician_to_client a Relay se non sono già lì
-    # (è meglio definirli nel __init__ di Relay, ma li mettiamo qui come promemoria)
     if not hasattr(relay, 'client_pins'):
         relay.client_pins = {}
     if not hasattr(relay, 'technician_to_client'):
         relay.technician_to_client = {}
 
-    start_server = websockets.serve(handler, "0.0.0.0", 8765)
+    # MODIFICA QUI: Usa await websockets.serve(handler, "0.0.0.0", 8765) per avviare il server
+    # E poi usa await server.serve_forever() per mantenerlo in esecuzione.
+    server = await websockets.serve(handler, "0.0.0.0", 8765)
     print("Server in ascolto su porta 8765...")
-    await start_server.wait_closed()
+    await server.serve_forever() # <-- CORREZIONE QUI
 
 if __name__ == "__main__":
     asyncio.run(main())
