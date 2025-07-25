@@ -5,13 +5,11 @@ import websockets
 import json
 import base64
 import time
-# import uuid # Non usato
 import pyautogui
-# import win32api, win32con # Solo per Windows. Non essenziali per la logica principale.
-from config import SERVER_HOST, SERVER_PORT, CLIENT_ID # Importa dalla tua config.py
 import mss
 import cv2
 import numpy as np
+from config import SERVER_HOST, SERVER_PORT, CLIENT_ID # Importa dalla tua config.py
 
 # Funzione per eseguire il click del mouse
 def perform_click(x, y, button):
@@ -36,7 +34,6 @@ def perform_mouse_scroll(direction):
 def perform_key_press(key):
     print(f"CLIENT DEBUG: Eseguo pressione tasto: {key}")
     try:
-        # Mappature per tasti speciali o non diretti di pyautogui
         pyautogui_key_map = {
             'space': ' ', 'enter': 'enter', 'backspace': 'backspace',
             'tab': 'tab', 'caps_lock': 'capslock', 'num_lock': 'numlock',
@@ -53,18 +50,14 @@ def perform_key_press(key):
             'cmd_l': 'win', 'cmd_r': 'win' # 'win' per il tasto Windows
         }
         
-        # Gestisce i nomi dei tasti di pynput convertiti in lowercase
         normalized_key = key.lower()
 
-        if normalized_key.startswith('key.'): # Rimuovi il prefisso 'Key.' di pynput
+        if normalized_key.startswith('key.'):
             normalized_key = normalized_key.replace('key.', '')
 
-        # Se il tasto è una combinazione (es. 'ctrl+c'), pyautogui.hotkey è più adatto.
-        # Per ora gestiamo solo singoli tasti.
         if normalized_key in pyautogui_key_map:
             pyautogui.press(pyautogui_key_map[normalized_key])
         else:
-            # Per i caratteri normali (a, b, 1, !, ecc.)
             pyautogui.press(key) 
 
         print(f"CLIENT DEBUG: Tasto '{key}' simulato.")
@@ -73,43 +66,35 @@ def perform_key_press(key):
 
 
 async def capture_and_send_screen(websocket):
-    # CLIENT_ID è definito in config.py
     print(f"CLIENT: Avvio loop di invio schermo per ID: {CLIENT_ID}")
     with mss.mss() as sct:
-        # Controlla il numero di monitor disponibili
-        if len(sct.monitors) < 2: # monitors[0] è informazioni su tutti i monitor, monitors[1] è il primo monitor reale
+        if len(sct.monitors) < 2:
             print("CLIENT AVVISO: Meno di due monitor rilevati. Utilizzo il primo monitor disponibile.")
             monitor_index = 1
         else:
-            monitor_index = 1 # Puoi cambiare questo per selezionare un monitor specifico (es. 2 per il secondo)
+            monitor_index = 1 
 
         monitor = sct.monitors[monitor_index] 
         
-        while websocket.open:  # Continua finché la connessione WebSocket è aperta
+        # Modifica qui: usa websocket.closed per verificare che la connessione sia aperta
+        while not websocket.closed:
             try:
-                # Cattura lo schermo
                 sct_img = sct.grab(monitor)
                 frame = np.array(sct_img)
-
-                # Converti in BGR (OpenCV usa BGR, mss usa BGRA) e rimuovi il canale alfa
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-                # Comprimi l'immagine in JPEG
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70]) # Qualità leggermente ridotta
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 encoded_frame = base64.b64encode(buffer).decode('utf-8')
 
-                # Prepara il messaggio
                 message = json.dumps({
                     "type": "message",
-                    "content_type": "screen", # CRUCIALE: indica al tecnico che è un frame dello schermo
+                    "content_type": "screen",
                     "id": CLIENT_ID,
                     "content": encoded_frame
                 })
 
-                # Invia il messaggio
                 await websocket.send(message)
                 # print(f"CLIENT: Inviato frame schermo (dimensione: {len(encoded_frame)} bytes)") # Troppo verboso
-                await asyncio.sleep(0.04)   # Invia circa 25 FPS (1/25 = 0.04)
+                await asyncio.sleep(0.04)
 
             except websockets.exceptions.ConnectionClosedOK:
                 print("CLIENT: Connessione chiusa normalmente (loop invio schermo).")
@@ -119,21 +104,19 @@ async def capture_and_send_screen(websocket):
                 break
             except Exception as e:
                 print(f"CLIENT ERRORE durante cattura e invio schermo: {e}")
-                # Considera una strategia di riconnessione o un ritardo maggiore qui
-                await asyncio.sleep(1) # Riprova dopo 1 secondo
+                await asyncio.sleep(1)
 
 async def receive_commands(websocket):
     print("CLIENT: Avvio loop di ricezione comandi.")
-    while websocket.open:
+    # Modifica qui: usa websocket.closed per verificare che la connessione sia aperta
+    while not websocket.closed:
         try:
             command_message = await websocket.recv()
             command_data = json.loads(command_message)
             
-            # Il server invia un messaggio con type: "command" e 'data' come un oggetto.
-            # Non un JSON dentro un JSON.
             if command_data.get('type') == 'command' and 'data' in command_data:
-                command_type = command_data.get('command_type') # Ora è direttamente qui
-                command_content = command_data.get('data')     # Ora è direttamente qui
+                command_type = command_data.get('command_type')
+                command_content = command_data.get('data')
 
                 print(f"CLIENT DEBUG: Ricevuto comando di tipo: {command_type} con dati: {command_content}")
 
@@ -178,7 +161,7 @@ async def receive_commands(websocket):
             print(f"CLIENT ERRORE: Ricevuto JSON non valido come comando: {command_message[:100]}...")
         except Exception as e:
             print(f"CLIENT ERRORE durante ricezione comandi: {e}")
-            await asyncio.sleep(1) # Riprova dopo 1 secondo
+            await asyncio.sleep(1)
 
 async def connect_and_register_client():
     uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
@@ -189,7 +172,6 @@ async def connect_and_register_client():
             async with websockets.connect(uri) as websocket:
                 print("✅ CLIENT: Connesso al server.")
 
-                # Messaggio di registrazione - il client non invia il PIN qui, lo riceve dal server
                 registration_message = json.dumps({
                     "type": "register",
                     "role": "client",
@@ -198,28 +180,46 @@ async def connect_and_register_client():
                 await websocket.send(registration_message)
                 print(f"📝 CLIENT: Inviato messaggio di registrazione (ID: {CLIENT_ID}).")
 
-                # Aspetta la risposta di registrazione dal server (che include il PIN)
                 registration_response_str = await websocket.recv()
                 registration_response = json.loads(registration_response_str)
 
                 if registration_response.get("status") == "registered" and registration_response.get("pin"):
-                    client_pin = registration_response["pin"] # Memorizza il PIN ricevuto
+                    client_pin = registration_response["pin"]
                     print(f"✅ CLIENT: Registrazione al server completata. Il tuo PIN di connessione è: {client_pin}")
                     
-                    # Avvia i loop di invio schermo e ricezione comandi in parallelo
                     send_task = asyncio.create_task(capture_and_send_screen(websocket))
                     receive_task = asyncio.create_task(receive_commands(websocket))
 
-                    # Attendi che entrambi i task si completino (o che la connessione si chiuda)
-                    await asyncio.gather(send_task, receive_task)
+                    # Se uno dei task finisce (es. connessione chiusa), vogliamo che anche l'altro termini.
+                    # Questo blocca fino a quando non termina uno dei due.
+                    done, pending = await asyncio.wait([send_task, receive_task], return_when=asyncio.FIRST_COMPLETED)
+                    
+                    # Cerca l'eccezione se un task è fallito
+                    for task in done:
+                        if task.exception():
+                            print(f"ERRORE CLIENT: Un task parallelo è terminato con un'eccezione: {task.exception()}")
+                    
+                    # Cancella i task rimanenti se uno è terminato
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task # Attendere che il task cancellato si fermi
+                        except asyncio.CancelledError:
+                            print(f"CLIENT: Task {task.get_name() if hasattr(task, 'get_name') else ''} è stato cancellato.")
+
                 else:
                     print(f"ERRORE CLIENT: Registrazione fallita o PIN non ricevuto. Risposta: {registration_response}")
-                    break # Esci dal loop di riconnessione se la registrazione fallisce
+                    break
 
-        except websockets.exceptions.ConnectionRefusedError:
-            print(f"ERRORE CLIENT: Connessione rifiutata dal server ({uri}). Assicurati che il server sia in esecuzione e accessibile. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
+        # Modifica qui: usa ConnectionRefusedError direttamente o BaseException per catturare tutto
+        # ConnectionRefusedError è una sottoclasse di OSError.
+        except OSError as e: # Catch OSError che include ConnectionRefusedError
+            if "Connection refused" in str(e):
+                print(f"ERRORE CLIENT: Connessione rifiutata dal server ({uri}). Assicurati che il server sia in esecuzione e accessibile. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
+            else:
+                print(f"ERRORE CLIENT: Errore di sistema durante la connessione ({uri}): {e}. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
             await asyncio.sleep(5)
-        except websockets.exceptions.ConnectionClosed as e:
+        except websockets.exceptions.ConnectionClosed as e: # Questo include ConnectionClosedOK e ConnectionClosedError
             print(f"ERRORE CLIENT: Connessione chiusa inaspettatamente ({uri}): {e}. Riprovo in 5 secondi... ({attempt + 1}/{reconnect_attempts})")
             await asyncio.sleep(5)
         except Exception as e:
