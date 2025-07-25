@@ -90,7 +90,10 @@ async def handle_message(websocket, message):
     msg_type = data.get('type')
     
     sender_role = relay.ws_to_role.get(websocket)
-    sender_id = relay.ws_to_id.get(websocket)
+    sender_id = relay.ws_id.get(websocket) # Correzione: deve essere ws_id, non ws_to_id se questa era la mappa
+    if sender_id is None: # Se non trovato, prova ws_to_id per compatibilità
+        sender_id = relay.ws_to_id.get(websocket)
+
 
     print(f"Server DEBUG: Ricevuto messaggio. Tipo: {msg_type}, Ruolo mittente: {sender_role}, ID mittente: {sender_id}, da {websocket.remote_address}")
 
@@ -130,18 +133,15 @@ async def handle_message(websocket, message):
         print(f"Server DEBUG: Tipo di messaggio sconosciuto: {msg_type}.")
 
 
-# Funzione principale per avviare il server
 async def main():
     if not hasattr(relay, 'client_pins'):
         relay.client_pins = {}
     if not hasattr(relay, 'technician_to_client'):
         relay.technician_to_client = {}
 
-    # MODIFICA QUI: Usa await websockets.serve(handler, "0.0.0.0", 8765) per avviare il server
-    # E poi usa await server.serve_forever() per mantenerlo in esecuzione.
     server = await websockets.serve(handler, "0.0.0.0", 8765)
     print("Server in ascolto su porta 8765...")
-    await server.serve_forever() # <-- CORREZIONE QUI
+    await server.serve_forever()
 
 if __name__ == "__main__":
     asyncio.run(main())
