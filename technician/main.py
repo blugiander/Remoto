@@ -18,8 +18,10 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Assicurati che i tuoi import siano corretti e che i percorsi siano validi
-from config import SERVER_HOST, SERVER_PORT, TECHNICIAN_ID
-from technician.control import create_command_message
+# NOTA: Se config.py è nella radice del progetto, non in technician/, allora sarebbe 'from config import ...'
+# Ma dalle tue screenshot, sembra che sia in technician/.
+from .config import SERVER_HOST, SERVER_PORT, TECHNICIAN_ID
+from .control import create_command_message # Usare .control per import relativo
 
 class TechnicianApp(ctk.CTk):
     def __init__(self):
@@ -48,7 +50,9 @@ class TechnicianApp(ctk.CTk):
         self.connect_button = ctk.CTkButton(self.pin_entry_frame, text="Connetti al Cliente", command=self.connect_to_client_async_wrapper)
         self.connect_button.pack(side="left", padx=5)
 
-        self.screen_label = ctk.CTkLabel(self, text="Attendere schermata...", width=800, height=450, fg_color="gray20")
+        # Inizializza con dimensioni di fallback che CustomTkinter userà se non è ancora impacchettato
+        # Queste dimensioni iniziali sono importanti per evitare un "label_width/height = 1" iniziale
+        self.screen_label = ctk.CTkLabel(self, text="Attendere schermata...", width=800, height=600, fg_color="gray20")
         self.screen_label.pack(pady=10, expand=True, fill="both")
 
         # Command input
@@ -77,7 +81,8 @@ class TechnicianApp(ctk.CTk):
         self.bind("<Destroy>", self.on_closing)
 
         # Store the size of the last received original frame (width, height)
-        self.current_frame_size = (0, 0)
+        # Inizializza con dimensioni placeholder per evitare divisione per zero o errori di proporzione all'avvio
+        self.current_frame_size = (1280, 1024) # Imposta una dimensione di default sensata, eguaglia la dimensione dell'errore
 
     def connect_to_client_async_wrapper(self):
         """Wrapper per chiamare connect_to_client che è una coroutine."""
@@ -171,24 +176,55 @@ class TechnicianApp(ctk.CTk):
         try:
             img_bytes = base64.b64decode(base64_data)
             np_arr = np.frombuffer(img_bytes, np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR) # Decodifica in BGR (3 canali)
 
             if frame is not None:
-                # Store the original frame dimensions for scaling calculations
-                self.current_frame_size = (frame.shape[1], frame.shape[0]) # (width, height)
+                # Controlla la forma del frame decodificato. Se ha 4 canali per qualche motivo, converti.
+                # cv2.imdecode(..., cv2.IMREAD_COLOR) dovrebbe dare 3 canali.
+                if len(frame.shape) == 3 and frame.shape[2] == 4:
+                    logging.warning(f"Frame ricevuto con 4 canali (BGRA), convertendo in BGR: {frame.shape}")
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                    # Questo è il caso atteso (BGR)
+                    pass
+                else:
+                    logging.error(f"Formato frame inatteso dopo decodifica: {frame.shape}")
+                    return
 
+                # Store the original frame dimensions for scaling calculations
+                # Usa shape[1] per la larghezza e shape[0] per l'altezza
+                self.current_frame_size = (frame.shape[1], frame.shape[0]) 
+
+                # Converti l'immagine da OpenCV (BGR) a PIL (RGB)
+                # Assicurati che sia RGB (3 canali) per Pillow
                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img_pil = Image.fromarray(img_rgb)
+                
+                # Ulteriore controllo per assicurarsi che Pillow riceva un'immagine RGB (3 canali)
+                if img_pil.mode == 'RGBA':
+                    logging.warning("PIL Image è in RGBA, convertendo in RGB per CustomTkinter.")
+                    img_pil = img_pil.convert('RGB')
+
 
                 label_width = self.screen_label.winfo_width()
                 label_height = self.screen_label.winfo_height()
 
-                # Fallback to initial size if label hasn't been fully rendered yet
-                if label_width <= 1 or label_height <= 1:
-                    label_width = self.screen_label.cget("width")
+                # Fallback a dimensioni predefinite se la label non è ancora stata completamente renderizzata
+                # Questo evita che label_width/height siano 1 o 0 all'inizio
+                if label_width < 100 or label_height < 100: # Usare soglie ragionevoli invece di 1
+                    label_width = self.screen_label.cget("width") # Ottieni le dimensioni iniziali impostate per la label
                     label_height = self.screen_label.cget("height")
+                    if label_width < 100 or label_height < 100: # Se anche cget non dà dimensioni valide (es. prima di pack)
+                        label_width = 800 # Fallback a valori hardcoded, devono corrispondere all'inizializzazione del widget
+                        label_height = 600
 
                 img_width, img_height = img_pil.size
+                
+                # Evita divisioni per zero se l'immagine è vuota o malformata
+                if img_width == 0 or img_height == 0:
+                    logging.error("L'immagine decodificata ha dimensioni zero, impossibile visualizzare.")
+                    return
+
                 aspect_ratio = img_width / img_height
 
                 # Calculate new dimensions to fit label while maintaining aspect ratio
@@ -211,7 +247,7 @@ class TechnicianApp(ctk.CTk):
                 self.screen_label.image = ctk_img # Keep a reference!
 
             else:
-                logging.error("Errore: Impossibile decodificare il frame dall'array NumPy.")
+                logging.error("Errore: Impossibile decodificare il frame dall'array NumPy (frame is None).")
         except Exception as e:
             logging.error(f"Errore nella visualizzazione del frame: {e}", exc_info=True)
 
@@ -226,6 +262,14 @@ class TechnicianApp(ctk.CTk):
                     label_width = self.screen_label.winfo_width()
                     label_height = self.screen_label.winfo_height()
                     frame_width, frame_height = self.current_frame_size
+
+                    # Usa le dimensioni di fallback iniziali per la label se non sono ancora reali
+                    if label_width < 100 or label_height < 100:
+                        label_width = self.screen_label.cget("width")
+                        label_height = self.screen_label.cget("height")
+                        if label_width < 100 or label_height < 100:
+                            label_width = 800
+                            label_height = 600
 
                     if label_width > 1 and label_height > 1 and frame_width > 0 and frame_height > 0:
                         # Calculate the actual displayed image dimensions within the label
@@ -249,7 +293,7 @@ class TechnicianApp(ctk.CTk):
                         if displayed_width > 0 and displayed_height > 0:
                             data['x'] = int(x_on_image * (frame_width / displayed_width))
                             data['y'] = int(y_on_image * (frame_height / displayed_height))
-                            # logging.debug(f"Scaled ({x_on_label}, {y_on_label}) to ({data['x']}, {data['y']}) for command {command_type}")
+                            # logging.debug(f"Scaled ({x_on_label}, {y_on_label}) to ({data['x']}, {data['y']})")
                         else:
                             logging.warning("Displayed image dimensions are zero, cannot scale coordinates.")
                     else:
