@@ -6,3 +6,5 @@ opencv-python
 pyautogui
 Pillow
 numpy
+customtkinter
+uuid
