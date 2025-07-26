@@ -1,5 +1,4 @@
-# technician/main.py - Esempio (adattalo al tuo codice reale)
-# Supponendo che la riga 203 sia dove hai un numero problematico.
+# remoto/technician/main.py
 
 import asyncio
 import websockets
@@ -11,20 +10,26 @@ import sys
 import tkinter as tk
 import customtkinter as ctk
 from PIL import Image, ImageTk
+import numpy as np
+import cv2
+import logging
+
+# Configurazione del logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Assicurati che i tuoi import siano corretti e che i percorsi siano validi
 from config import SERVER_HOST, SERVER_PORT, TECHNICIAN_ID
-from technician.control import create_command_message # Abbiamo unificato le funzioni di controllo
+from technician.control import create_command_message
 
 class TechnicianApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"Tecnico Remoto - ID: {TECHNICIAN_ID}")
-        self.geometry("1024x768") # Risoluzione tipica per visualizzazione schermo
+        self.geometry("1024x768")
 
         self.websocket = None
         self.is_connected = False
-        self.connected_client_pin = None # PIN del client attualmente connesso
+        self.connected_client_pin = None
 
         # UI Elements
         self.status_label = ctk.CTkLabel(self, text="Status: Disconnesso", font=("Arial", 16))
@@ -39,7 +44,8 @@ class TechnicianApp(ctk.CTk):
         self.pin_entry = ctk.CTkEntry(self.pin_entry_frame, width=150, placeholder_text="Inserisci PIN Cliente")
         self.pin_entry.pack(side="left", padx=5)
 
-        self.connect_button = ctk.CTkButton(self.pin_entry_frame, text="Connetti al Cliente", command=self.connect_to_client)
+        # Il comando del bottone chiama un wrapper per gestire async/sync
+        self.connect_button = ctk.CTkButton(self.pin_entry_frame, text="Connetti al Cliente", command=self.connect_to_client_async_wrapper)
         self.connect_button.pack(side="left", padx=5)
 
         self.screen_label = ctk.CTkLabel(self, text="Attendere schermata...", width=800, height=450, fg_color="gray20")
@@ -59,21 +65,27 @@ class TechnicianApp(ctk.CTk):
         self.screen_label.bind("<Button-1>", self.on_left_click)
         self.screen_label.bind("<Button-3>", self.on_right_click)
         self.screen_label.bind("<Motion>", self.on_mouse_move)
-        self.screen_label.bind("<B1-Motion>", self.on_mouse_drag_left) # Mouse drag with left button
-        self.screen_label.bind("<B3-Motion>", self.on_mouse_drag_right) # Mouse drag with right button
-        self.screen_label.bind("<MouseWheel>", self.on_mouse_scroll) # For Windows/macOS scroll wheel
+        self.screen_label.bind("<B1-Motion>", self.on_mouse_drag_left)
+        self.screen_label.bind("<B3-Motion>", self.on_mouse_drag_right)
+        self.screen_label.bind("<MouseWheel>", self.on_mouse_scroll)
 
         # Bind keyboard events to the main window
         self.bind("<Key>", self.on_key_press_global)
         self.bind("<KeyPress>", self.on_key_down_global)
         self.bind("<KeyRelease>", self.on_key_up_global)
 
-
         self.bind("<Destroy>", self.on_closing)
+
+        # Store the size of the last received original frame (width, height)
+        self.current_frame_size = (0, 0)
+
+    def connect_to_client_async_wrapper(self):
+        """Wrapper per chiamare connect_to_client che è una coroutine."""
+        asyncio.create_task(self.connect_to_client())
 
     async def connect_to_client(self):
         if self.is_connected:
-            print("Già connesso al server.")
+            logging.info("Già connesso al server.")
             return
 
         client_pin = self.pin_entry.get()
@@ -81,13 +93,13 @@ class TechnicianApp(ctk.CTk):
             self.status_label.configure(text="Errore: Inserisci il PIN del cliente!")
             return
 
-        self.connected_client_pin = client_pin # Store the target PIN
+        self.connected_client_pin = client_pin
 
         uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
         self.status_label.configure(text=f"Status: Connessione a {uri} per PIN {client_pin}...")
         try:
             self.websocket = await websockets.connect(uri)
-            print(f"Connesso al server: {uri}")
+            logging.info(f"Connesso al server: {uri}")
             self.is_connected = True
             self.status_label.configure(text="Status: Connesso al server!")
 
@@ -96,16 +108,16 @@ class TechnicianApp(ctk.CTk):
                 "type": "register",
                 "role": "technician",
                 "id": TECHNICIAN_ID,
-                "target_pin": self.connected_client_pin # Indica il PIN del client che vuoi controllare
+                "pin": self.connected_client_pin # Indica il PIN del client che vuoi controllare
             }
             await self.websocket.send(json.dumps(registration_message))
-            print(f"Inviato messaggio di registrazione tecnico: {registration_message}")
+            logging.info(f"Inviato messaggio di registrazione tecnico: {registration_message}")
 
             # Avvia il loop di ricezione messaggi (frame e conferme)
             asyncio.create_task(self.receive_messages())
 
         except Exception as e:
-            print(f"Errore di connessione al server: {e}")
+            logging.error(f"Errore di connessione al server: {e}")
             self.status_label.configure(text=f"Status: Errore di connessione - {e}")
             self.is_connected = False
 
@@ -119,28 +131,40 @@ class TechnicianApp(ctk.CTk):
                 if message.get("type") == "frame" and message.get("sender_id") == self.connected_client_pin:
                     base64_frame = message.get("content")
                     if base64_frame:
-                        self.display_screen_frame(base64_frame)
+                        # Schedule display_screen_frame to run in the Tkinter main loop
+                        self.after(0, self.display_screen_frame, base64_frame)
                 elif message.get("type") == "status":
-                    print(f"Server Status: {message.get('content')}")
+                    logging.info(f"Server Status: {message.get('message')}")
+                    self.status_label.configure(text=f"Status: {message.get('message')}")
+                elif message.get("type") == "notification":
+                    logging.info(f"Server Notification: {message.get('message')}")
+                    self.status_label.configure(text=f"Status: {message.get('message')}")
+                    if "disconnesso" in message.get('message', '').lower() and self.is_connected:
+                        logging.warning("Il client si è disconnesso o il server ha chiuso la connessione.")
+                        self.is_connected = False
+                        if self.websocket and not self.websocket.closed:
+                            await self.websocket.close() # Chiudi esplicitamente il websocket
+                        self.status_label.configure(text="Status: Client disconnesso. Riconnetti.")
                 elif message.get("type") == "error":
-                    print(f"Server Error: {message.get('content')}")
+                    logging.error(f"Server Error: {message.get('message')}")
+                    self.status_label.configure(text=f"Status: Errore - {message.get('message')}")
                 else:
-                    print(f"Messaggio ricevuto (non frame): {message}")
+                    logging.debug(f"Messaggio ricevuto (non frame): {message}")
 
             except websockets.exceptions.ConnectionClosedOK:
-                print("Connessione WebSocket chiusa normalmente.")
+                logging.info("Connessione WebSocket chiusa normalmente.")
                 self.is_connected = False
                 self.status_label.configure(text="Status: Disconnesso.")
                 break
             except websockets.exceptions.ConnectionClosedError as e:
-                print(f"Errore di connessione WebSocket: {e}")
+                logging.error(f"Errore di connessione WebSocket: {e}")
                 self.is_connected = False
                 self.status_label.configure(text=f"Status: Disconnesso - {e}")
                 break
-            except json.JSONDecodeError:
-                print(f"Errore di decodifica JSON: {message_json}")
+            except json.JSONDecodeError as e:
+                logging.error(f"Errore di decodifica JSON: {e} - Messaggio: {message_json[:200]}...")
             except Exception as e:
-                print(f"Errore durante la ricezione del messaggio: {e}")
+                logging.error(f"Errore durante la ricezione del messaggio: {e}", exc_info=True)
                 await asyncio.sleep(1) # Wait a bit before retrying
 
     def display_screen_frame(self, base64_data):
@@ -150,23 +174,24 @@ class TechnicianApp(ctk.CTk):
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
             if frame is not None:
-                # Converti l'immagine da OpenCV (BGR) a PIL (RGB)
+                # Store the original frame dimensions for scaling calculations
+                self.current_frame_size = (frame.shape[1], frame.shape[0]) # (width, height)
+
                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img_pil = Image.fromarray(img_rgb)
 
-                # Ridimensiona l'immagine per adattarla alla label mantenendo le proporzioni
-                # Ottieni le dimensioni attuali della label per il ridimensionamento dinamico
                 label_width = self.screen_label.winfo_width()
                 label_height = self.screen_label.winfo_height()
 
-                if label_width == 1 or label_height == 1: # Default values before actual sizing
-                    label_width = 800 # Fallback to initial size
-                    label_height = 450
-                
-                # Calcola le nuove dimensioni mantenendo le proporzioni
+                # Fallback to initial size if label hasn't been fully rendered yet
+                if label_width <= 1 or label_height <= 1:
+                    label_width = self.screen_label.cget("width")
+                    label_height = self.screen_label.cget("height")
+
                 img_width, img_height = img_pil.size
                 aspect_ratio = img_width / img_height
 
+                # Calculate new dimensions to fit label while maintaining aspect ratio
                 if label_width / label_height > aspect_ratio:
                     new_height = label_height
                     new_width = int(new_height * aspect_ratio)
@@ -174,48 +199,91 @@ class TechnicianApp(ctk.CTk):
                     new_width = label_width
                     new_height = int(new_width / aspect_ratio)
 
+                # Ensure dimensions are at least 1 to avoid errors
+                new_width = max(1, new_width)
+                new_height = max(1, new_height)
+
                 img_pil = img_pil.resize((new_width, new_height), Image.LANCZOS)
-                
-                # Converti PIL Image in CTkImage
+
                 ctk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(new_width, new_height))
-                
-                # Aggiorna la label nel thread principale di Tkinter
+
                 self.screen_label.configure(image=ctk_img)
-                self.screen_label.image = ctk_img # Mantieni un riferimento per evitare che venga eliminata
+                self.screen_label.image = ctk_img # Keep a reference!
 
             else:
-                print("Errore: Impossibile decodificare il frame dall'array NumPy.")
+                logging.error("Errore: Impossibile decodificare il frame dall'array NumPy.")
         except Exception as e:
-            print(f"Errore nella visualizzazione del frame: {e}")
+            logging.error(f"Errore nella visualizzazione del frame: {e}", exc_info=True)
 
     async def send_command(self, command_type: str, data: dict):
         if self.websocket and self.is_connected and self.connected_client_pin:
+            # Scale coordinates if it's a mouse command
+            if command_type in ['mouse_click', 'mouse_move', 'mouse_drag']:
+                x_on_label = data.get('x')
+                y_on_label = data.get('y')
+
+                if x_on_label is not None and y_on_label is not None:
+                    label_width = self.screen_label.winfo_width()
+                    label_height = self.screen_label.winfo_height()
+                    frame_width, frame_height = self.current_frame_size
+
+                    if label_width > 1 and label_height > 1 and frame_width > 0 and frame_height > 0:
+                        # Calculate the actual displayed image dimensions within the label
+                        aspect_ratio = frame_width / frame_height
+                        if label_width / label_height > aspect_ratio:
+                            displayed_height = label_height
+                            displayed_width = int(displayed_height * aspect_ratio)
+                        else:
+                            displayed_width = label_width
+                            displayed_height = int(displayed_width / aspect_ratio)
+
+                        # Calculate offset if the image is centered within the label
+                        offset_x = (label_width - displayed_width) / 2
+                        offset_y = (label_height - displayed_height) / 2
+
+                        # Convert coordinates from label space to displayed image space
+                        x_on_image = x_on_label - offset_x
+                        y_on_image = y_on_label - offset_y
+
+                        # Scale coordinates to the original frame resolution
+                        if displayed_width > 0 and displayed_height > 0:
+                            data['x'] = int(x_on_image * (frame_width / displayed_width))
+                            data['y'] = int(y_on_image * (frame_height / displayed_height))
+                            # logging.debug(f"Scaled ({x_on_label}, {y_on_label}) to ({data['x']}, {data['y']}) for command {command_type}")
+                        else:
+                            logging.warning("Displayed image dimensions are zero, cannot scale coordinates.")
+                    else:
+                        logging.warning("Label or frame dimensions not available for scaling, sending raw coordinates.")
+                else:
+                    logging.warning(f"Coordinate X o Y mancanti per il comando {command_type}.")
+
             message_json = create_command_message(self.connected_client_pin, command_type, data)
             try:
                 await self.websocket.send(message_json)
-                # print(f"Comando '{command_type}' inviato per PIN {self.connected_client_pin}")
             except Exception as e:
-                print(f"Errore nell'invio del comando: {e}")
+                logging.error(f"Errore nell'invio del comando '{command_type}': {e}")
         else:
-            print("Non connesso o PIN cliente non impostato per inviare comandi.")
+            logging.warning("Non connesso o PIN cliente non impostato per inviare comandi.")
 
     def send_command_from_entry(self):
+        """Prende il comando dall'input testuale e lo invia."""
         command_text = self.command_entry.get().strip()
         if not command_text:
             return
 
         parts = command_text.split(' ')
         command_type = parts[0].lower()
-        
+
         # Simple parsing for demo, expand for robust command handling
         if command_type == 'click' and len(parts) >= 3:
             try:
                 x = int(parts[1])
                 y = int(parts[2])
                 button = parts[3] if len(parts) > 3 else 'left'
+                # Note: These are raw coordinates, scaling will happen in send_command
                 asyncio.create_task(self.send_command('mouse_click', {'x': x, 'y': y, 'button': button}))
             except ValueError:
-                print("Formato click: click <x> <y> [button]")
+                logging.warning("Formato click: click <x> <y> [button]")
         elif command_type == 'keypress' and len(parts) >= 2:
             key = parts[1]
             asyncio.create_task(self.send_command('key_press', {'key': key}))
@@ -223,110 +291,81 @@ class TechnicianApp(ctk.CTk):
             try:
                 x = int(parts[1])
                 y = int(parts[2])
+                # Note: These are raw coordinates, scaling will happen in send_command
                 asyncio.create_task(self.send_command('mouse_move', {'x': x, 'y': y}))
             except ValueError:
-                print("Formato move: move <x> <y>")
+                logging.warning("Formato move: move <x> <y>")
         elif command_type == 'scroll' and len(parts) >= 2:
             direction = parts[1].lower()
             amount = int(parts[2]) if len(parts) > 2 else 1
             if direction in ['up', 'down']:
                 asyncio.create_task(self.send_command('mouse_scroll', {'direction': direction, 'amount': amount}))
             else:
-                print("Formato scroll: scroll <up|down> [amount]")
+                logging.warning("Formato scroll: scroll <up|down> [amount]")
         else:
-            print(f"Comando non riconosciuto o malformato: {command_text}")
-        
+            logging.warning(f"Comando non riconosciuto o malformato: {command_text}")
+
         self.command_entry.delete(0, 'end') # Clear entry
 
-    # Mouse Event Handlers for screen_label
+    # Mouse Event Handlers for screen_label - pass event.x/y directly, scaling happens in send_command
     def on_left_click(self, event):
-        # Scale coordinates from label to original frame if necessary, or send as is for now
-        # You'll need to implement scaling based on actual image dimensions vs label dimensions
-        # For simplicity, sending raw coordinates from the label
-        # The client side's pyautogui will click at these coordinates relative to its screen
-        x_on_label = event.x
-        y_on_label = event.y
-        # TODO: Implement proper scaling if client's screen resolution differs from technician's view
-        # Example: scale_x = client_screen_width / label_width
-        #          scaled_x = x_on_label * scale_x
-        asyncio.create_task(self.send_command('mouse_click', {'x': x_on_label, 'y': y_on_label, 'button': 'left'}))
-        # print(f"Left Click at ({x_on_label}, {y_on_label})")
+        asyncio.create_task(self.send_command('mouse_click', {'x': event.x, 'y': event.y, 'button': 'left'}))
 
     def on_right_click(self, event):
-        x_on_label = event.x
-        y_on_label = event.y
-        asyncio.create_task(self.send_command('mouse_click', {'x': x_on_label, 'y': y_on_label, 'button': 'right'}))
-        # print(f"Right Click at ({x_on_label}, {y_on_label})")
+        asyncio.create_task(self.send_command('mouse_click', {'x': event.x, 'y': event.y, 'button': 'right'}))
 
     def on_mouse_move(self, event):
-        x_on_label = event.x
-        y_on_label = event.y
-        # print(f"Mouse Move to ({x_on_label}, {y_on_label})")
-        asyncio.create_task(self.send_command('mouse_move', {'x': x_on_label, 'y': y_on_label}))
+        asyncio.create_task(self.send_command('mouse_move', {'x': event.x, 'y': event.y}))
 
     def on_mouse_drag_left(self, event):
-        x_on_label = event.x
-        y_on_label = event.y
-        asyncio.create_task(self.send_command('mouse_drag', {'x': x_on_label, 'y': y_on_label, 'button': 'left'}))
-        # print(f"Left Drag to ({x_on_label}, {y_on_label})")
+        asyncio.create_task(self.send_command('mouse_drag', {'x': event.x, 'y': event.y, 'button': 'left'}))
 
     def on_mouse_drag_right(self, event):
-        x_on_label = event.x
-        y_on_label = event.y
-        asyncio.create_task(self.send_command('mouse_drag', {'x': x_on_label, 'y': y_on_label, 'button': 'right'}))
-        # print(f"Right Drag to ({x_on_label}, {y_on_label})")
+        asyncio.create_task(self.send_command('mouse_drag', {'x': event.x, 'y': event.y, 'button': 'right'}))
 
     def on_mouse_scroll(self, event):
-        # event.delta provides the scroll amount (e.g., 120 for scroll up, -120 for scroll down)
-        # Normalize to a simple 'up'/'down' direction with a generic amount
         direction = 'up' if event.delta > 0 else 'down'
-        amount = abs(event.delta) // 120 # Convert delta to "clicks" (usually 1 per notch)
+        amount = abs(event.delta) // 120 # Standard delta for one scroll "click" is 120
         asyncio.create_task(self.send_command('mouse_scroll', {'direction': direction, 'amount': amount}))
-        # print(f"Mouse Scroll: {direction} by {amount}")
 
     # Keyboard Event Handlers
     def on_key_press_global(self, event):
-        # This captures a single key press (char for printable, keysym for special)
-        # Note: pyautogui.press expects actual key names (e.g., 'enter', 'shift', 'a')
         # event.char might be empty for special keys, event.keysym is more reliable
         key_name = event.keysym.lower() if event.char == '' else event.char
         if key_name:
             asyncio.create_task(self.send_command('key_press', {'key': key_name}))
-            # print(f"Key Press: {key_name}")
 
     def on_key_down_global(self, event):
-        # This captures when a key is pressed down
         key_name = event.keysym.lower() if event.char == '' else event.char
         if key_name:
             asyncio.create_task(self.send_command('key_down', {'key': key_name}))
-            # print(f"Key Down: {key_name}")
 
     def on_key_up_global(self, event):
-        # This captures when a key is released
         key_name = event.keysym.lower() if event.char == '' else event.char
         if key_name:
             asyncio.create_task(self.send_command('key_up', {'key': key_name}))
-            # print(f"Key Up: {key_name}")
-
 
     def on_closing(self, event=None):
-        print("Applicazione chiusa. Tentativo di disconnessione...")
-        if self.websocket:
-            asyncio.create_task(self.websocket.close())
+        logging.info("Applicazione chiusa. Tentativo di disconnessione...")
+        if self.websocket and self.is_connected:
+            asyncio.create_task(self.websocket.close()) # Chiudi la connessione WebSocket
         self.destroy()
 
 async def main():
     app = TechnicianApp()
     # Esegui il loop di asyncio in un thread separato
+    # Questo è fondamentale perché CustomTkinter ha il suo mainloop bloccante.
     loop = asyncio.get_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
-    
-    # Collega il metodo di connessione al button (sarà chiamato in un task asyncio)
-    app.connect_button.configure(command=lambda: asyncio.create_task(app.connect_to_client()))
 
     app.mainloop()
 
 if __name__ == "__main__":
-    # ctk.set_appearance_mode("System")
+    # ctk.set_appearance_mode("System") # Themes can be set here if desired
     # ctk.set_default_color_theme("blue")
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Tecnico interrotto da tastiera.")
+    except Exception as e:
+        logging.critical(f"Errore irreversibile durante l'avvio o l'esecuzione del tecnico: {e}", exc_info=True)

@@ -1,4 +1,9 @@
+# remoto/technician/control.py
+
 import json
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def create_command_message(target_pin: str, command_type: str, data: dict) -> str:
     """
@@ -12,7 +17,6 @@ def create_command_message(target_pin: str, command_type: str, data: dict) -> st
     Returns:
         str: A JSON string representing the command message.
     """
-    # Validate command_type and data structure based on expected commands
     valid_command_types = [
         'mouse_click',
         'mouse_move',
@@ -20,13 +24,12 @@ def create_command_message(target_pin: str, command_type: str, data: dict) -> st
         'key_press',
         'key_down',
         'key_up',
-        'mouse_drag' # Added mouse drag command
+        'mouse_drag'
     ]
 
     if command_type not in valid_command_types:
-        print(f"WARNING: Attempted to create an invalid command type: {command_type}")
+        logging.warning(f"WARNING: Attempted to create an invalid command type: {command_type}")
         # You might raise an error here or return None/empty string depending on desired strictness
-        # For now, we'll still attempt to send, but log a warning.
 
     message_content = {
         'command_type': command_type,

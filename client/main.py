@@ -5,184 +5,235 @@ import websockets
 import json
 import base64
 import time
-import threading
 import sys
-import os # Importa il modulo os per la gestione dei percorsi
-import tkinter as tk
-import customtkinter as ctk
-from PIL import Image, ImageTk
+import os
+import random
+import string
+import logging
 
-# --- Inizio sezione per la gestione dei percorsi di importazione ---
-# Ottiene la directory corrente del file (client/)
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# Risale alla directory radice del progetto (Remoto/)
-project_root = os.path.join(current_dir, '..')
-# Aggiunge la directory radice del progetto al sys.path
-# Questo permette di importare moduli direttamente dalla radice, come 'config' e 'command_executor'
-sys.path.append(project_root)
-# --- Fine sezione per la gestione dei percorsi di importazione ---
+# Aggiungi per cattura schermo e controllo input
+import mss
+import cv2
+import numpy as np
+import pyautogui
+import platform
 
+# Configurazione del logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Assicurati che i tuoi import siano corretti e che i percorsi siano validi
-# 'capture' si trova nella stessa directory 'client/', quindi è un import relativo
-from .capture import ScreenCapture
-# 'command_executor' si trova nella directory radice del progetto, quindi è un import diretto
-from command_executor import CommandExecutor 
-# 'config' si trova nella directory radice del progetto, quindi è un import diretto
-from config import SERVER_HOST, SERVER_PORT, CLIENT_ID, CLIENT_PIN
+# Importa configurazione
+try:
+    from config import SERVER_HOST, SERVER_PORT, CLIENT_ID_PREFIX
+except ImportError:
+    # Fallback se config.py non è presente (utile per test rapidi)
+    SERVER_HOST = '188.245.238.160' # Sostituisci con l'IP del tuo server
+    SERVER_PORT = 8765
+    CLIENT_ID_PREFIX = 'client'
+    logging.warning("config.py non trovato, usando configurazione di fallback.")
 
+# Variabili globali per la connessione
+websocket = None
+is_connected = False
+client_pin = None # Il PIN generato per questo client
 
-class ClientApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title(f"Client Remoto - ID: {CLIENT_ID}")
-        self.geometry("800x600")
+# Funzione per generare un PIN a 6 cifre
+def generate_pin():
+    return ''.join(random.choices(string.digits, k=6))
 
-        self.screen_capture = ScreenCapture()
-        self.command_executor = CommandExecutor()
-        self.websocket = None
-        self.is_connected = False
-        self.last_frame_time = time.time()
-        self.fps_counter = 0
-
-        # UI elements
-        self.label = ctk.CTkLabel(self, text="Status: Disconnesso", font=("Arial", 16))
-        self.label.pack(pady=20)
-
-        self.pin_label = ctk.CTkLabel(self, text=f"PIN per il tecnico: {CLIENT_PIN}", font=("Arial", 24, "bold"))
-        self.pin_label.pack(pady=10)
-
-        self.connect_button = ctk.CTkButton(self, text="Connetti al Server", command=self.connect_to_server)
-        self.connect_button.pack(pady=10)
-
-        # Frame rate display
-        self.fps_label = ctk.CTkLabel(self, text="FPS: 0.00", font=("Arial", 14))
-        self.fps_label.pack(pady=5)
-
-        self.bind("<Destroy>", self.on_closing)
-
-    async def connect_to_server(self):
-        if self.is_connected:
-            print("Già connesso al server.")
-            return
-
-        uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
-        self.label.configure(text=f"Status: Connessione a {uri}...")
-        try:
-            self.websocket = await websockets.connect(uri)
-            print(f"Connesso al server: {uri}")
-            self.is_connected = True
-            self.label.configure(text="Status: Connesso!")
+# Funzione per catturare lo schermo
+def capture_screen_frame():
+    try:
+        with mss.mss() as sct:
+            # Cattura l'intero schermo. Se hai più monitor, potresti voler specificare 'monitor=1' o iterare.
+            monitor = sct.monitors[1] # [0] è l'intero desktop, [1] il primo monitor
+            sct_img = sct.grab(monitor)
             
-            # Invia messaggio di registrazione con CLIENT_ID e CLIENT_PIN
+            # Converti in un array NumPy (OpenCV compatibile)
+            # La dimensione di sct_img.rgb è (altezza, larghezza, 3) ma è RGB, OpenCV è BGR
+            frame = np.array(sct_img.pixels, dtype=np.uint8).reshape((sct_img.height, sct_img.width, 4))
+            frame = frame[:, :, :3] # Rimuovi il canale alpha
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) # Converti da RGB a BGR
+
+            # Comprimi l'immagine in JPEG per ridurre le dimensioni
+            ret, jpeg_encoded_frame = cv2.imencode('.jpeg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                return base64.b64encode(jpeg_encoded_frame.tobytes()).decode('utf-8')
+            else:
+                logging.error("Errore nella codifica JPEG del frame.")
+                return None
+    except mss.exception.ScreenShotError as e:
+        logging.error(f"Errore di cattura schermo (MSS): {e}")
+        logging.error("Assicurati che un server X sia in esecuzione (es. Xvfb su Linux headless).")
+        return None
+    except Exception as e:
+        logging.error(f"Errore generico durante la cattura dello schermo: {e}")
+        return None
+
+async def send_screen_frames():
+    global websocket, is_connected
+    while is_connected:
+        try:
+            frame_data = capture_screen_frame()
+            if frame_data:
+                message = {
+                    "type": "frame",
+                    "role": "client",
+                    "id": client_pin, # Usa il PIN come ID
+                    "content": frame_data
+                }
+                await websocket.send(json.dumps(message))
+            await asyncio.sleep(0.05) # Invia circa 20 frame al secondo
+        except websockets.exceptions.ConnectionClosed:
+            logging.info("Connessione chiusa durante l'invio del frame.")
+            is_connected = False
+            break
+        except Exception as e:
+            logging.error(f"Errore durante l'invio del frame: {e}")
+            await asyncio.sleep(1) # Attendi un po' prima di riprovare
+
+async def handle_commands():
+    global websocket, is_connected
+    while is_connected:
+        try:
+            message_json = await websocket.recv()
+            message = json.loads(message_json)
+
+            if message.get("type") == "command" and message.get("role") == "technician":
+                command_content = message.get("content", {})
+                command_type = command_content.get("command_type")
+                data = command_content.get("data", {})
+                
+                logging.info(f"Comando ricevuto: {command_type} con dati: {data}")
+
+                try:
+                    if command_type == "mouse_move":
+                        x, y = data.get("x"), data.get("y")
+                        if x is not None and y is not None:
+                            pyautogui.moveTo(x, y, _pause=False)
+                    elif command_type == "mouse_click":
+                        x, y = data.get("x"), data.get("y")
+                        button = data.get("button", "left")
+                        if x is not None and y is not None:
+                            pyautogui.click(x, y, button=button, _pause=False)
+                    elif command_type == "mouse_scroll":
+                        direction = data.get("direction")
+                        amount = data.get("amount", 1)
+                        if direction == "up":
+                            pyautogui.scroll(amount, _pause=False)
+                        elif direction == "down":
+                            pyautogui.scroll(-amount, _pause=False)
+                    elif command_type == "mouse_drag":
+                        x, y = data.get("x"), data.get("y")
+                        button = data.get("button", "left")
+                        if x is not None and y is not None:
+                             pyautogui.dragTo(x, y, button=button, _pause=False)
+                    elif command_type == "key_press":
+                        key = data.get("key")
+                        if key:
+                            pyautogui.press(key, _pause=False)
+                    elif command_type == "key_down":
+                        key = data.get("key")
+                        if key:
+                            pyautogui.keyDown(key, _pause=False)
+                    elif command_type == "key_up":
+                        key = data.get("key")
+                        if key:
+                            pyautogui.keyUp(key, _pause=False)
+                    else:
+                        logging.warning(f"Comando non riconosciuto: {command_type}")
+                except Exception as e:
+                    logging.error(f"Errore durante l'esecuzione del comando {command_type}: {e}")
+            elif message.get("type") == "status":
+                logging.info(f"Server Status: {message.get('message')}")
+            elif message.get("type") == "error":
+                logging.error(f"Server Error: {message.get('message')}")
+            elif message.get("type") == "notification":
+                logging.info(f"Server Notification: {message.get('message')}")
+            else:
+                logging.warning(f"Messaggio ricevuto non gestito: {message}")
+
+        except websockets.exceptions.ConnectionClosed:
+            logging.info("Connessione chiusa durante la gestione dei comandi.")
+            is_connected = False
+            break
+        except json.JSONDecodeError:
+            logging.error(f"Errore di decodifica JSON nel messaggio ricevuto: {message_json}")
+        except Exception as e:
+            logging.error(f"Errore durante la ricezione o gestione del messaggio: {e}")
+            await asyncio.sleep(1) # Attendi un po' prima di riprovare
+
+async def connect_to_server():
+    global websocket, is_connected, client_pin
+
+    uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
+    
+    # Genera un PIN al primo tentativo o se la connessione è stata chiusa
+    if client_pin is None:
+        client_pin = generate_pin()
+        logging.info(f"PIN generato per questa sessione: {client_pin}")
+
+    reconnect_delay = 1 # Secondi
+    while True:
+        try:
+            logging.info(f"Tentativo di connessione al server: {uri}")
+            websocket = await websockets.connect(uri)
+            is_connected = True
+            logging.info("Connesso al server.")
+
+            # Invia messaggio di registrazione
             registration_message = {
                 "type": "register",
                 "role": "client",
-                "id": CLIENT_ID,
-                "pin": CLIENT_PIN
+                "id": client_pin, # Usa il PIN come ID del client
+                "pin": client_pin
             }
-            await self.websocket.send(json.dumps(registration_message))
-            print(f"Inviato messaggio di registrazione: {registration_message}")
+            await websocket.send(json.dumps(registration_message))
+            logging.info(f"Inviato messaggio di registrazione: {registration_message}")
 
-            # Avvia i loop di invio e ricezione in background
-            asyncio.create_task(self.send_screen_frames())
-            asyncio.create_task(self.receive_commands())
+            # Avvia i task per inviare frame e ricevere comandi
+            await asyncio.gather(
+                send_screen_frames(),
+                handle_commands()
+            )
 
+        except websockets.exceptions.ConnectionClosed as e:
+            logging.warning(f"Connessione al server chiusa: {e}. Riconnessione in {reconnect_delay}s...")
+            is_connected = False
+        except ConnectionRefusedError:
+            logging.error(f"Connessione rifiutata. Il server è in esecuzione su {SERVER_HOST}:{SERVER_PORT}?")
+            is_connected = False
         except Exception as e:
-            print(f"Errore di connessione al server: {e}")
-            self.label.configure(text=f"Status: Errore di connessione - {e}")
-            self.is_connected = False
-
-    async def send_screen_frames(self):
-        while self.is_connected:
-            try:
-                frame_jpeg_bytes = self.screen_capture.get_frame_as_jpeg()
-                if frame_jpeg_bytes:
-                    # Codifica base64 e invia
-                    base64_frame = base64.b64encode(frame_jpeg_bytes).decode('utf-8')
-                    message = {
-                        "type": "frame",
-                        "sender_id": CLIENT_ID,
-                        "target_role": "technician", # Frame da inviare al tecnico
-                        "content": base64_frame
-                    }
-                    await self.websocket.send(json.dumps(message))
-                    
-                    self.fps_counter += 1
-                    if time.time() - self.last_frame_time >= 1: # Update FPS every second
-                        self.fps_label.configure(text=f"FPS: {self.fps_counter / (time.time() - self.last_frame_time):.2f}")
-                        self.fps_counter = 0
-                        self.last_frame_time = time.time()
-
-                await asyncio.sleep(0.01) # Small delay to avoid 100% CPU usage
-            except websockets.exceptions.ConnectionClosedOK:
-                print("Connessione WebSocket chiusa normalmente (send_screen_frames).")
-                self.is_connected = False
-                break
-            except websockets.exceptions.ConnectionClosedError as e:
-                print(f"Errore di connessione WebSocket in send_screen_frames: {e}")
-                self.is_connected = False
-                break
-            except Exception as e:
-                print(f"Errore durante l'invio del frame: {e}")
-                await asyncio.sleep(1) # Wait a bit before retrying
-
-    async def receive_commands(self):
-        while self.is_connected:
-            try:
-                message_json = await self.websocket.recv()
-                message = json.loads(message_json)
-
-                if message.get("type") == "command" and message.get("target_id") == CLIENT_ID:
-                    command_type = message.get("content", {}).get("command_type")
-                    command_data = message.get("content", {}).get("data")
-                    
-                    if command_type and command_data:
-                        print(f"Ricevuto comando: {command_type} con dati: {command_data}")
-                        # Esegui il comando in un thread separato per non bloccare l'UI/WebSocket
-                        # Passa l'intero dizionario 'content' che contiene 'command_type' e 'data'
-                        threading.Thread(target=self.command_executor.execute_command, args=(message.get("content"),)).start()
-                    else:
-                        print(f"Comando malformato ricevuto: {message}")
-                else:
-                    print(f"Messaggio ricevuto (non comando per me): {message}")
-
-            except websockets.exceptions.ConnectionClosedOK:
-                print("Connessione WebSocket chiusa normalmente (receive_commands).")
-                self.is_connected = False
-                break
-            except websockets.exceptions.ConnectionClosedError as e:
-                print(f"Errore di connessione WebSocket in receive_commands: {e}")
-                self.is_connected = False
-                break
-            except json.JSONDecodeError:
-                print(f"Errore di decodifica JSON: {message_json}")
-            except Exception as e:
-                print(f"Errore durante la ricezione del comando: {e}")
-                await asyncio.sleep(1) # Wait a bit before retrying
-
-    def on_closing(self, event=None):
-        print("Applicazione chiusa. Tentativo di disconnessione...")
-        if self.websocket:
-            # Chiudi la connessione WebSocket nel loop di asyncio
-            asyncio.create_task(self.websocket.close())
-        self.destroy() # Distrugge la finestra Tkinter/CustomTkinter
+            logging.error(f"Errore di connessione o inatteso: {e}. Riconnessione in {reconnect_delay}s...", exc_info=True)
+            is_connected = False
+        finally:
+            if websocket and not websocket.closed:
+                await websocket.close()
+            logging.info(f"Disconnesso. Tentativo di riconnessione in {reconnect_delay} secondi...")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60) # Backoff esponenziale fino a 60 secondi
 
 async def main():
-    app = ClientApp()
-    # Esegui il loop di asyncio in un thread separato per non bloccare la GUI Tkinter
-    # Questo è un approccio comune quando si mescolano asyncio e Tkinter
-    loop = asyncio.get_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
-    
-    # Collega il metodo di connessione al button (sarà chiamato in un task asyncio)
-    # È cruciale avviare la connessione in un task asyncio
-    app.connect_button.configure(command=lambda: asyncio.create_task(app.connect_to_server()))
+    # Disabilita il fail-safe di pyautogui se stai eseguendo su un server senza GUI
+    # o se vuoi che pyautogui non termini lo script quando il mouse va negli angoli.
+    # Attenzione: abilitalo solo se sai cosa stai facendo e hai un modo per fermare lo script.
+    pyautogui.FAILSAFE = False # Impostalo su False per ambienti headless
+    pyautogui.PAUSE = 0 # Rimuove le pause implicite tra le chiamate pyautogui
 
-    app.mainloop()
+    # Configurazione specifica per Linux headless (es. Hetzner con Xvfb)
+    if platform.system() == "Linux" and "DISPLAY" not in os.environ:
+        logging.info("Nessuna variabile DISPLAY rilevata. Assicurati che Xvfb sia configurato.")
+        logging.info("Esempio: export DISPLAY=:99 && Xvfb :99 -screen 0 1024x768x24 &")
+        # Puoi anche provare a impostare una risoluzione predefinita per pyautogui,
+        # anche se mss dovrebbe rilevarla correttamente se Xvfb è attivo.
+        # pyautogui._size = (1024, 768) # Dimensione virtuale dello schermo se non rilevata
+
+    logging.info(f"Client avviato. Connessione a {SERVER_HOST}:{SERVER_PORT}")
+    await connect_to_server()
 
 if __name__ == "__main__":
-    # Avvia l'applicazione client
-    # ctk.set_appearance_mode("System") # Default value
-    # ctk.set_default_color_theme("blue") # Default value
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Client interrotto da tastiera.")
+    finally:
+        logging.info("Client terminato.")

@@ -1,254 +1,208 @@
-# server/main.py
+# remoto/server/main.py
 
 import asyncio
 import websockets
 import json
-import random
-import string
-import time
-from datetime import datetime
+import logging
+import sys
 
-from config import SERVER_HOST, SERVER_PORT # Importa dalla tua config.py
+# Configurazione del logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Dizionari per gestire le connessioni
-connected_clients = {}  # {client_id: websocket}
-connected_technicians = {} # {technician_id: websocket}
-client_pins = {} # {client_id: pin}
-active_sessions = {} # {pin: {"client": websocket, "technician": websocket}}
+# Dizionari per tenere traccia delle connessioni
+# {pin_code: websocket}
+connected_clients = {}
+# {technician_id: websocket}
+connected_technicians = {}
+# {technician_id: target_client_pin} - per tracciare a quale client è connesso un tecnico
+technician_targets = {}
 
-async def generate_unique_pin():
-    """Genera un PIN numerico di 6 cifre unico."""
-    while True:
-        pin = ''.join(random.choices(string.digits, k=6))
-        if pin not in active_sessions and pin not in client_pins.values():
-            return pin
+async def register(websocket, message):
+    role = message.get("role")
+    id = message.get("id")
+    pin = message.get("pin") # Per i client, questo è il loro PIN; per i tecnici, è il PIN del client a cui vogliono connettersi.
+
+    if not role or not id:
+        logging.warning(f"Tentativo di registrazione con ruolo o ID mancante: {message}")
+        await websocket.send(json.dumps({"type": "error", "message": "Ruolo o ID mancante nella registrazione."}))
+        return
+
+    if role == "client":
+        if not pin:
+            logging.warning(f"Tentativo di registrazione client senza PIN: {message}")
+            await websocket.send(json.dumps({"type": "error", "message": "PIN mancante per la registrazione client."}))
+            return
+        if pin in connected_clients:
+            logging.warning(f"Client con PIN {pin} già connesso. Disconnessione del vecchio client.")
+            # Opzionale: chiudi la vecchia connessione o ignora la nuova
+            await connected_clients[pin].close() # Chiude la vecchia connessione
+        connected_clients[pin] = websocket
+        logging.info(f"Client registrato: ID {id}, PIN {pin}")
+        await websocket.send(json.dumps({"type": "status", "message": f"Registrato come client con PIN: {pin}"}))
+
+        # Notifica i tecnici in attesa di questo client
+        for tech_id, target_pin in technician_targets.items():
+            if target_pin == pin and tech_id in connected_technicians:
+                try:
+                    await connected_technicians[tech_id].send(json.dumps({
+                        "type": "notification",
+                        "message": f"Il client con PIN {pin} è ora online."
+                    }))
+                    logging.info(f"Notificato tecnico {tech_id} che client {pin} è online.")
+                except Exception as e:
+                    logging.error(f"Errore nell'invio della notifica al tecnico {tech_id}: {e}")
+
+    elif role == "technician":
+        if id in connected_technicians:
+            logging.warning(f"Tecnico con ID {id} già connesso. Disconnessione del vecchio tecnico.")
+            await connected_technicians[id].close()
+        connected_technicians[id] = websocket
+        technician_targets[id] = pin # Salva il PIN del client che il tecnico vuole controllare
+        logging.info(f"Tecnico registrato: ID {id}, target PIN {pin}")
+        await websocket.send(json.dumps({"type": "status", "message": f"Registrato come tecnico con ID: {id}. Tentativo di connessione al client PIN: {pin}"}))
+
+        if pin not in connected_clients:
+            await websocket.send(json.dumps({"type": "error", "message": f"Client con PIN {pin} non trovato o non online."}))
+            logging.warning(f"Tecnico {id} ha tentato di connettersi a client {pin} ma non è online.")
+        else:
+            await websocket.send(json.dumps({
+                "type": "notification",
+                "message": f"Connesso con successo al client con PIN: {pin}. In attesa di frame..."
+            }))
+            logging.info(f"Tecnico {id} connesso a client {pin}.")
+
+    else:
+        logging.warning(f"Ruolo sconosciuto durante la registrazione: {role}")
+        await websocket.send(json.dumps({"type": "error", "message": "Ruolo sconosciuto."}))
+
+async def unregister(websocket):
+    # Rimuovi il client
+    client_to_remove_pin = None
+    for pin, ws in connected_clients.items():
+        if ws == websocket:
+            client_to_remove_pin = pin
+            break
+    if client_to_remove_pin:
+        del connected_clients[client_to_remove_pin]
+        logging.info(f"Client con PIN {client_to_remove_pin} disconnesso.")
+        # Notifica i tecnici che erano connessi a questo client
+        for tech_id, target_pin in list(technician_targets.items()): # Usa list() per modificare il dizionario durante l'iterazione
+            if target_pin == client_to_remove_pin and tech_id in connected_technicians:
+                try:
+                    await connected_technicians[tech_id].send(json.dumps({
+                        "type": "notification",
+                        "message": f"Il client con PIN {client_to_remove_pin} si è disconnesso."
+                    }))
+                    logging.info(f"Notificato tecnico {tech_id} che client {client_to_remove_pin} è offline.")
+                except Exception as e:
+                    logging.error(f"Errore nell'invio della notifica di disconnessione al tecnico {tech_id}: {e}")
+                # Non rimuovere il tecnico da technician_targets, potrebbe voler aspettare il client
+                # del connected_technicians[tech_id] rimuove la connessione se chiude il websocket
+                if tech_id in connected_technicians and connected_technicians[tech_id].closed:
+                    del connected_technicians[tech_id]
+                    if tech_id in technician_targets:
+                        del technician_targets[tech_id]
+
+
+    # Rimuovi il tecnico
+    technician_to_remove_id = None
+    for tech_id, ws in connected_technicians.items():
+        if ws == websocket:
+            technician_to_remove_id = tech_id
+            break
+    if technician_to_remove_id:
+        del connected_technicians[technician_to_remove_id]
+        if technician_to_remove_id in technician_targets:
+            del technician_targets[technician_to_remove_id]
+        logging.info(f"Tecnico con ID {technician_to_remove_id} disconnesso.")
+
 
 async def handler(websocket):
-    client_ip = websocket.remote_address[0]
-    print(f"SERVER: Nuova connessione da {client_ip}.")
-
     try:
-        # Primo messaggio per la registrazione
-        registration_message_str = await websocket.recv()
-        registration_message = json.loads(registration_message_str)
+        async for message_json in websocket:
+            message = json.loads(message_json)
+            msg_type = message.get("type")
+            sender_role = message.get("role")
+            sender_id = message.get("id") # ID del mittente (client_id o technician_id)
 
-        msg_type = registration_message.get("type")
-        role = registration_message.get("role")
-        id_val = registration_message.get("id")
-
-        if msg_type == "register":
-            if role == "client":
-                if id_val in connected_clients:
-                    print(f"SERVER: CLIENT {id_val} ha tentato di riconnettersi senza disconnessione precedente. Chiudo la vecchia connessione.")
-                    # Chiusura forzata della vecchia connessione se esiste
-                    old_ws = connected_clients.get(id_val)
-                    if old_ws and not old_ws.closed:
-                        await old_ws.close()
-                    # Rimuovi sessioni attive legate a questo client
-                    for pin, session in list(active_sessions.items()):
-                        if session["client"] == old_ws:
-                            del active_sessions[pin]
-                            if pin in client_pins:
-                                del client_pins[pin]
-                            print(f"SERVER: Chiusa sessione attiva e rimosso PIN {pin} per vecchio client {id_val}.")
-
-
-                pin = await generate_unique_pin()
-                connected_clients[id_val] = websocket
-                client_pins[id_val] = pin
-                print(f"SERVER: CLIENT {id_val} registrato con PIN: {pin}")
-
-                response = {"status": "registered", "pin": pin}
-                await websocket.send(json.dumps(response))
-
-            elif role == "technician":
-                tech_pin = registration_message.get("pin")
-                if not tech_pin:
-                    print(f"SERVER: TECNICO da {client_ip} ha tentato la registrazione senza PIN.")
-                    await websocket.send(json.dumps({"status": "error", "message": "PIN richiesto per tecnico."}))
-                    return
-
-                # Trova il client_id associato al PIN
-                client_id_for_pin = None
-                for c_id, p in client_pins.items():
-                    if p == tech_pin:
-                        client_id_for_pin = c_id
-                        break
-
-                if client_id_for_pin and client_id_for_pin in connected_clients:
-                    client_ws = connected_clients[client_id_for_pin]
-                    
-                    # Controlla se una sessione è già attiva per questo PIN
-                    if tech_pin in active_sessions:
-                        print(f"SERVER: Sessione per PIN {tech_pin} già attiva. Chiudo la vecchia connessione tecnico.")
-                        old_tech_ws = active_sessions[tech_pin]["technician"]
-                        if old_tech_ws and not old_tech_ws.closed:
-                            await old_tech_ws.close() # Forzo la disconnessione del vecchio tecnico
-                        # Non elimino l'intera sessione, solo rimpiazzo il tecnico
-                        active_sessions[tech_pin]["technician"] = websocket
-                    else:
-                        active_sessions[tech_pin] = {"client": client_ws, "technician": websocket}
-
-                    connected_technicians[id_val] = websocket # Registra il tecnico con il suo ID
-                    print(f"SERVER: TECNICO {id_val} (PIN: {tech_pin}) connesso al CLIENT {client_id_for_pin}.")
-                    response = {"status": "registered", "message": f"Connesso al client {client_id_for_pin}"}
-                    await websocket.send(json.dumps(response))
-
-                    # Notifica il client che un tecnico si è connesso (opzionale)
-                    # await client_ws.send(json.dumps({"type": "notification", "message": "Un tecnico si è connesso alla tua sessione."}))
+            if msg_type == "register":
+                await register(websocket, message)
+            elif msg_type == "frame" and sender_role == "client":
+                pin = sender_id # Il PIN del client è il suo ID per il server
+                if pin in connected_clients and connected_clients[pin] == websocket:
+                    # Inoltra il frame a tutti i tecnici che hanno questo client come target
+                    for tech_id, target_pin in technician_targets.items():
+                        if target_pin == pin and tech_id in connected_technicians:
+                            try:
+                                # Inoltra il messaggio del frame così com'è
+                                # Assicurati che il messaggio contenga 'sender_id' e 'content'
+                                message['sender_id'] = pin # Aggiungi/assicura sender_id per il tecnico
+                                await connected_technicians[tech_id].send(json_dumps_message(message))
+                            except Exception as e:
+                                logging.error(f"Errore nell'inoltro del frame da {pin} a tecnico {tech_id}: {e}")
+                                # Se l'invio fallisce, potremmo voler disconnettere il tecnico
+                                # o gestire diversamente. Per ora, logghiamo.
                 else:
-                    print(f"SERVER: TECNICO {id_val} ha tentato di connettersi a PIN {tech_pin} inesistente o client non connesso.")
-                    await websocket.send(json.dumps({"status": "error", "message": "PIN non valido o client non connesso."}))
-                    return
+                    logging.warning(f"Frame ricevuto da client non registrato o non valido: {sender_id}")
+            elif msg_type == "command" and sender_role == "technician":
+                target_id = message.get("target_id") # Il PIN del client a cui è destinato il comando
+                if target_id and target_id in connected_clients:
+                    try:
+                        # Inoltra il comando al client target
+                        await connected_clients[target_id].send(json_dumps_message(message))
+                        # logging.info(f"Comando inoltrato da tecnico a client {target_id}")
+                    except Exception as e:
+                        logging.error(f"Errore nell'inoltro del comando a client {target_id}: {e}")
+                else:
+                    logging.warning(f"Comando ricevuto da tecnico {sender_id} per client {target_id} non trovato o non online.")
+                    if websocket: # Se il websocket del tecnico è ancora aperto, invia errore
+                        await websocket.send(json.dumps({"type": "error", "message": f"Client con PIN {target_id} non trovato o non online per il comando."}))
             else:
-                print(f"SERVER: Ruolo '{role}' non riconosciuto per {client_ip}.")
-                await websocket.send(json.dumps({"status": "error", "message": "Ruolo non valido."}))
-                return
-        else:
-            print(f"SERVER: Messaggio di registrazione non valido da {client_ip}: {registration_message_str}")
-            await websocket.send(json.dumps({"status": "error", "message": "Messaggio di registrazione non valido."}))
-            return
-
-        # Loop principale per routing messaggi
-        while True:
-            try:
-                message_str = await websocket.recv()
-                message = json.loads(message_str)
-                
-                msg_type = message.get("type")
-                content_type = message.get("content_type")
-                sender_id = message.get("id")
-
-                # Ottieni la sessione attiva per il websocket corrente
-                current_session_pin = None
-                is_client = False
-                is_technician = False
-
-                for pin, session in active_sessions.items():
-                    if session["client"] == websocket:
-                        current_session_pin = pin
-                        is_client = True
-                        break
-                    if session["technician"] == websocket:
-                        current_session_pin = pin
-                        is_technician = True
-                        break
-                
-                if current_session_pin:
-                    target_client_ws = active_sessions[current_session_pin]["client"]
-                    target_technician_ws = active_sessions[current_session_pin]["technician"]
-
-                    if is_client and msg_type == "message" and content_type == "screen":
-                        # Client invia schermo -> Invia al tecnico associato
-                        if target_technician_ws and not target_technician_ws.closed:
-                            await target_technician_ws.send(message_str)
-                            # print(f"SERVER: Inviato frame schermo da {sender_id} a tecnico associato (PIN: {current_session_pin}).")
-                        # else:
-                            # print(f"SERVER DEBUG: Tentato invio schermo da {sender_id} ma tecnico per PIN {current_session_pin} non connesso.")
-                    elif is_technician and msg_type == "command":
-                        # Tecnico invia comando -> Invia al client associato
-                        if target_client_ws and not target_client_ws.closed:
-                            await target_client_ws.send(message_str)
-                            print(f"SERVER: Inviato comando da tecnico {sender_id} a client associato (PIN: {current_session_pin}).")
-                        # else:
-                            # print(f"SERVER DEBUG: Tentato invio comando da tecnico {sender_id} ma client per PIN {current_session_pin} non connesso.")
-                    else:
-                        print(f"SERVER AVVISO: Messaggio inatteso da {sender_id} (tipo: {msg_type}, contenuto: {content_type})")
-                else:
-                    # Messaggio da client/tecnico non in una sessione attiva
-                    if websocket in connected_clients.values() and msg_type == "message" and content_type == "screen":
-                        # Un client sta inviando schermate ma non ha una sessione attiva con un tecnico
-                        # Questo è normale se un tecnico non si è ancora connesso al suo PIN
-                        # print(f"SERVER DEBUG: Client {sender_id} invia schermo senza tecnico connesso.")
-                        pass # Nessuna azione richiesta, il client continuerà a inviare
-                    elif websocket in connected_technicians.values() and msg_type == "command":
-                        print(f"SERVER AVVISO: Tecnico {sender_id} ha inviato un comando ma non è in una sessione attiva.")
-                    else:
-                        print(f"SERVER AVVISO: Messaggio non instradabile da {sender_id} (WS non in sessione): {message_str[:100]}...")
-
-
-            except websockets.exceptions.ConnectionClosedOK:
-                print(f"SERVER: Connessione chiusa normalmente da {client_ip}.")
-                break
-            except websockets.exceptions.ConnectionClosedError as e:
-                print(f"SERVER ERRORE: Connessione chiusa inaspettatamente da {client_ip}: {e}")
-                break
-            except json.JSONDecodeError:
-                print(f"SERVER ERRORE: JSON non valido ricevuto da {client_ip}: {message_str[:100]}...")
-            except Exception as e:
-                print(f"SERVER ERRORE: Errore durante gestione messaggio da {client_ip}: {e}")
-                break # Rompe il loop in caso di errore grave
+                logging.warning(f"Messaggio non gestito o malformato: {message_json}")
+                if websocket:
+                    await websocket.send(json.dumps({"type": "error", "message": "Messaggio non riconosciuto."}))
 
     except websockets.exceptions.ConnectionClosedOK:
-        print(f"SERVER: Connessione iniziale chiusa normalmente da {client_ip}.")
+        logging.info("Connessione WebSocket chiusa normalmente.")
     except websockets.exceptions.ConnectionClosedError as e:
-        print(f"SERVER ERRORE: Connessione iniziale chiusa inaspettatamente da {client_ip}: {e}")
+        logging.error(f"Connessione WebSocket chiusa con errore: {e}")
     except json.JSONDecodeError:
-        print(f"SERVER ERRORE: JSON di registrazione non valido da {client_ip}.")
+        logging.error("Errore di decodifica JSON nel messaggio ricevuto.")
     except Exception as e:
-        print(f"SERVER ERRORE: Errore durante la fase di registrazione per {client_ip}: {e}")
+        logging.critical(f"Errore imprevisto nel gestore WebSocket: {e}", exc_info=True)
     finally:
-        # Pulizia delle connessioni e delle sessioni al termine della connessione
-        print(f"SERVER: Pulizia connessione per {client_ip}...")
-        is_client_disconnected = False
-        is_technician_disconnected = False
-        
-        # Rimuovi dai client connessi
-        for c_id, ws in list(connected_clients.items()):
-            if ws == websocket:
-                print(f"SERVER: CLIENT {c_id} disconnesso.")
-                del connected_clients[c_id]
-                if c_id in client_pins:
-                    disconnected_pin = client_pins[c_id]
-                    del client_pins[c_id]
-                    print(f"SERVER: PIN {disconnected_pin} rimosso per client {c_id}.")
-                    # Se era un client, rimuovi l'intera sessione attiva legata al suo PIN
-                    if disconnected_pin in active_sessions:
-                        tech_ws = active_sessions[disconnected_pin]["technician"]
-                        if tech_ws and not tech_ws.closed:
-                            print(f"SERVER: Notifico tecnico connesso al PIN {disconnected_pin} della disconnessione del client.")
-                            try:
-                                await tech_ws.send(json.dumps({"type": "notification", "message": "Il client si è disconnesso dalla sessione."}))
-                            except Exception as e:
-                                print(f"SERVER AVVISO: Fallita notifica tecnico su disconnessione client: {e}")
-                        del active_sessions[disconnected_pin]
-                        print(f"SERVER: Sessione attiva per PIN {disconnected_pin} terminata (client disconnesso).")
-                is_client_disconnected = True
-                break
-        
-        # Rimuovi dai tecnici connessi
-        if not is_client_disconnected: # Se non era un client, potrebbe essere un tecnico
-            for t_id, ws in list(connected_technicians.items()):
-                if ws == websocket:
-                    print(f"SERVER: TECNICO {t_id} disconnesso.")
-                    del connected_technicians[t_id]
-                    # Se era un tecnico, rimuovi solo il tecnico dalla sessione attiva
-                    for pin, session in list(active_sessions.items()):
-                        if session["technician"] == websocket:
-                            print(f"SERVER: TECNICO {t_id} disconnesso dalla sessione per PIN {pin}. Sessione client rimane attiva.")
-                            # Non cancelliamo la sessione intera, solo il tecnico
-                            active_sessions[pin]["technician"] = None # Imposta a None per indicare che non c'è tecnico
-                            # Notifica il client che il tecnico si è disconnesso (opzionale)
-                            client_ws = active_sessions[pin]["client"]
-                            if client_ws and not client_ws.closed:
-                                print(f"SERVER: Notifico client connesso al PIN {pin} della disconnessione del tecnico.")
-                                try:
-                                    await client_ws.send(json.dumps({"type": "notification", "message": "Il tecnico si è disconnesso dalla sessione."}))
-                                except Exception as e:
-                                    print(f"SERVER AVVISO: Fallita notifica client su disconnessione tecnico: {e}")
-                            break # Esci dal ciclo for dopo aver trovato e gestito il tecnico
-                    is_technician_disconnected = True
-                    break
+        await unregister(websocket)
+
+def json_dumps_message(message):
+    """
+    Helper to dump JSON, handling potential errors for circular references etc.
+    """
+    try:
+        return json.dumps(message)
+    except TypeError as e:
+        logging.error(f"Errore di serializzazione JSON: {e} - Message: {message}")
+        return json.dumps({"type": "error", "message": "Errore interno di serializzazione."})
 
 async def main():
-    print(f"SERVER: Avvio server WebSocket su ws://{SERVER_HOST}:{SERVER_PORT}")
-    async with websockets.serve(handler, SERVER_HOST, SERVER_PORT):
-        await asyncio.Future()  # Esegui indefinitamente
+    # Per Hetzner, assicurati che l'IP sia raggiungibile pubblicamente
+    # Ascolta su tutte le interfacce disponibili
+    host = "0.0.0.0" # Ascolta su tutte le interfacce
+    port = 8765
+
+    # sys.argv per prendere host e porta da riga di comando se necessario
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = int(sys.argv[2])
+
+    logging.info(f"Server WebSocket avviato su ws://{host}:{port}")
+    async with websockets.serve(handler, host, port):
+        await asyncio.Future() # Mantieni il server in esecuzione indefinitamente
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("SERVER: Server interrotto manualmente.")
+        logging.info("Server interrotto da tastiera.")
     except Exception as e:
-        print(f"SERVER ERRORE CRITICO: {e}")
+        logging.critical(f"Errore irreversibile durante l'avvio o l'esecuzione del server: {e}", exc_info=True)

@@ -1,6 +1,11 @@
+# remoto/technician/viewer.py
+
 import cv2
 import base64
 import numpy as np
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # This flag will control if the OpenCV window is currently open
 _is_cv_window_open = False
@@ -24,12 +29,12 @@ def mostra_immagine_cv(base64_data: str, window_name: str = "Schermo Remoto"):
         if frame is not None:
             cv2.imshow(window_name, frame)
             _is_cv_window_open = True
-            
+
             # This waitKey is crucial. It processes GUI events for the OpenCV window.
             # A value of 1ms ensures it's non-blocking for this single call,
             # but if called in a loop, it will effectively "block" until 1ms passes.
-            key = cv2.waitKey(1) & 0xFF 
-            
+            key = cv2.waitKey(1) & 0xFF
+
             # If 'q' is pressed or the window is closed manually
             if key == ord('q') or cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                 cv2.destroyAllWindows()
@@ -37,10 +42,10 @@ def mostra_immagine_cv(base64_data: str, window_name: str = "Schermo Remoto"):
                 return False # Indicate that the viewer should stop
             return True # Indicate that the viewer is still active
         else:
-            print("❌ Errore: Impossibile decodificare il frame dall'array NumPy.")
+            logging.error("❌ Errore: Impossibile decodificare il frame dall'array NumPy.")
             return True
     except Exception as e:
-        print(f"❌ Errore nella visualizzazione con OpenCV: {e}")
+        logging.error(f"❌ Errore nella visualizzazione con OpenCV: {e}", exc_info=True)
         return True # Continue trying unless an explicit stop is requested
 
 def close_cv_window():
@@ -49,13 +54,13 @@ def close_cv_window():
     if _is_cv_window_open:
         cv2.destroyAllWindows()
         _is_cv_window_open = False
-        print("OpenCV window closed.")
+        logging.info("OpenCV window closed.")
 
 # --- Example Usage (for standalone testing of this file) ---
 if __name__ == "__main__":
-    print("This file demonstrates standalone OpenCV image display.")
-    print("It's generally NOT used directly when integrating with CustomTkinter.")
-    print("Generating a dummy red image for display. Press 'q' or close window to exit.")
+    logging.info("This file demonstrates standalone OpenCV image display.")
+    logging.info("It's generally NOT used directly when integrating with CustomTkinter.")
+    logging.info("Generating a dummy red image for display. Press 'q' or close window to exit.")
 
     # Create a dummy red image (e.g., 640x480 red image)
     dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -66,16 +71,16 @@ if __name__ == "__main__":
     if ret:
         base64_dummy_data = base64.b64encode(jpeg_encoded_frame.tobytes()).decode('utf-8')
 
-        print("Displaying dummy image...")
+        logging.info("Displaying dummy image...")
         # Simulate receiving frames
         try:
             while mostra_immagine_cv(base64_dummy_data):
                 # In a real scenario, you'd get new base64_data here
-                pass 
+                pass
         except KeyboardInterrupt:
-            print("\nDisplay interrupted by user.")
+            logging.info("\nDisplay interrupted by user.")
         finally:
             close_cv_window()
-            print("Viewer test finished.")
+            logging.info("Viewer test finished.")
     else:
-        print("Failed to encode dummy image.")
+        logging.error("Failed to encode dummy image.")
