@@ -1,6 +1,4 @@
-# client/main.py - Esempio (adattalo al tuo codice reale)
-# Supponendo che la riga 33 sia dove hai un numero problematico.
-# Per esempio, se fosse una definizione di porta o simile, assicurati che sia solo il numero.
+# remoto/client/main.py
 
 import asyncio
 import websockets
@@ -9,13 +7,28 @@ import base64
 import time
 import threading
 import sys
+import os # Importa il modulo os per la gestione dei percorsi
 import tkinter as tk
 import customtkinter as ctk
 from PIL import Image, ImageTk
 
+# --- Inizio sezione per la gestione dei percorsi di importazione ---
+# Ottiene la directory corrente del file (client/)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Risale alla directory radice del progetto (Remoto/)
+project_root = os.path.join(current_dir, '..')
+# Aggiunge la directory radice del progetto al sys.path
+# Questo permette di importare moduli direttamente dalla radice, come 'config' e 'command_executor'
+sys.path.append(project_root)
+# --- Fine sezione per la gestione dei percorsi di importazione ---
+
+
 # Assicurati che i tuoi import siano corretti e che i percorsi siano validi
-from client.capture import ScreenCapture
-from client.command_executor import CommandExecutor
+# 'capture' si trova nella stessa directory 'client/', quindi è un import relativo
+from .capture import ScreenCapture
+# 'command_executor' si trova nella directory radice del progetto, quindi è un import diretto
+from command_executor import CommandExecutor 
+# 'config' si trova nella directory radice del progetto, quindi è un import diretto
 from config import SERVER_HOST, SERVER_PORT, CLIENT_ID, CLIENT_PIN
 
 
@@ -127,6 +140,7 @@ class ClientApp(ctk.CTk):
                     if command_type and command_data:
                         print(f"Ricevuto comando: {command_type} con dati: {command_data}")
                         # Esegui il comando in un thread separato per non bloccare l'UI/WebSocket
+                        # Passa l'intero dizionario 'content' che contiene 'command_type' e 'data'
                         threading.Thread(target=self.command_executor.execute_command, args=(message.get("content"),)).start()
                     else:
                         print(f"Comando malformato ricevuto: {message}")
