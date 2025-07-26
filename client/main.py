@@ -10,6 +10,7 @@ import mss
 import cv2
 import numpy as np
 import threading # Per gestire il mouse move in background
+<<<<<<< HEAD
 import sys # Per gestire l'uscita pulita
 
 # Importa dalla tua config.py (assicurati che config.py esista nella stessa directory)
@@ -23,12 +24,20 @@ from config import SERVER_HOST, SERVER_PORT, CLIENT_ID
 # Devono essere dichiarate a livello di modulo (globali per tutto il file)
 mouse_move_thread = None
 mouse_move_event = threading.Event() # Usato per segnalare al thread di movimento mouse di fermarsi
+=======
+from config import SERVER_HOST, SERVER_PORT, CLIENT_ID # Importa dalla tua config.py
+
+# Variabili per il controllo del mouse/tastiera
+mouse_move_thread = None
+mouse_move_event = threading.Event()
+>>>>>>> 413ff6f04e84f437222564744ceed3974a03307d
 mouse_target_x = 0
 mouse_target_y = 0
 
 # Funzione per eseguire il click del mouse
 def perform_click(x, y, button):
     print(f"CLIENT DEBUG: Eseguo click su: {x}, {y} con bottone: {button}")
+<<<<<<< HEAD
     try:
         pyautogui.click(x=x, y=y, button=button)
         print(f"CLIENT DEBUG: Click eseguito: x={x}, y={y}, button={button}")
@@ -81,6 +90,40 @@ def perform_mouse_scroll(direction):
         print(f"CLIENT DEBUG: Scroll eseguito: {direction}")
     except Exception as e:
         print(f"CLIENT ERRORE: Impossibile eseguire scroll '{direction}': {e}")
+=======
+    # pyautogui.click usa internamente moveTo e mouseDown/mouseUp
+    pyautogui.click(x=x, y=y, button=button)
+    print(f"CLIENT DEBUG: Click eseguito: x={x}, y={y}, button={button}")
+>>>>>>> 413ff6f04e84f437222564744ceed3974a03307d
+
+# Funzione per eseguire il movimento del mouse in un thread separato
+def _mouse_move_worker():
+    global mouse_target_x, mouse_target_y
+    while not mouse_move_event.is_set():
+        if pyautogui.position() != (mouse_target_x, mouse_target_y):
+            # Usiamo pyautogui.moveTo con durata 0 per un movimento istantaneo o quasi
+            pyautogui.moveTo(mouse_target_x, mouse_target_y, duration=0.01) # Piccola durata per ammorbidire
+        time.sleep(0.01) # Piccolo ritardo per non saturare la CPU
+
+def perform_mouse_move(x, y):
+    global mouse_target_x, mouse_target_y, mouse_move_thread, mouse_move_event
+    mouse_target_x = x
+    mouse_target_y = y
+
+    if mouse_move_thread is None or not mouse_move_thread.is_alive():
+        mouse_move_event.clear()
+        mouse_move_thread = threading.Thread(target=_mouse_move_worker, daemon=True)
+        mouse_move_thread.start()
+    # print(f"CLIENT DEBUG: Aggiornato target mouse a: {x}, {y}") # Molto verboso se in streaming
+
+
+# Funzione per eseguire lo scroll del mouse
+def perform_mouse_scroll(direction):
+    print(f"CLIENT DEBUG: Eseguo scroll mouse: {direction}")
+    if direction == "up":
+        pyautogui.scroll(10) # Scroll up di 10 "unità"
+    elif direction == "down":
+        pyautogui.scroll(-10) # Scroll down di 10 "unità"
 
 # Funzione per simulare la pressione di un tasto
 def perform_key_press(key):
@@ -291,7 +334,10 @@ async def connect_and_register_client():
             await asyncio.sleep(5)
     
     print(f"CLIENT: Falliti {reconnect_attempts} tentativi di connessione. Uscita.")
+<<<<<<< HEAD
     sys.exit(1) # Termina il processo del client dopo falliti tentativi
+=======
+>>>>>>> 413ff6f04e84f437222564744ceed3974a03307d
 
 # --- BLOCCO PRINCIPALE DI ESECUZIONE ---
 if __name__ == "__main__":
@@ -302,6 +348,7 @@ if __name__ == "__main__":
         print("CLIENT: Programma interrotto dall'utente.")
     finally:
         # Assicurati di fermare il thread del mouse in caso di interruzione
+<<<<<<< HEAD
         # Non è necessaria la keyword 'global' qui perché siamo a livello di modulo
         # e stiamo semplicemente accedendo alla variabile globale.
         mouse_move_event.set()
@@ -310,4 +357,10 @@ if __name__ == "__main__":
             mouse_move_thread.join(timeout=1) # Attendi un po' per la terminazione
             if mouse_move_thread.is_alive():
                 print("CLIENT AVVISO: Il thread di movimento mouse non è terminato in tempo.")
+=======
+        global mouse_move_event
+        mouse_move_event.set()
+        if mouse_move_thread and mouse_move_thread.is_alive():
+            mouse_move_thread.join(timeout=1) # Attendi un po' per la terminazione
+>>>>>>> 413ff6f04e84f437222564744ceed3974a03307d
         print("CLIENT: Programma terminato.")
